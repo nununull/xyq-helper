@@ -35,6 +35,8 @@ export const demoQuestions: QuestionRecord[] = [
   },
 ]
 
+export type TrigramIndex = Record<string, number[]>
+
 /**
  * 使用题干相似度和选项相似度对候选题排序。
  */
@@ -42,8 +44,10 @@ export function matchQuestion(
   parsed: ParsedQuestion,
   questions: QuestionRecord[] = demoQuestions,
   minConfidence = 0.45,
+  index?: TrigramIndex,
 ): MatchResult | null {
-  const candidates = questions
+  const pool = selectCandidatePool(parsed, questions, index)
+  const candidates = pool
     .map((question) => {
       const questionScore = diceSimilarity(parsed.normalizedQuestion, question.normalizedQuestion)
       const optionScore = diceSimilarity(parsed.normalizedOptions, question.normalizedOptions)
@@ -67,4 +71,52 @@ export function matchQuestion(
     category: best.question.category,
     candidates,
   }
+}
+
+function selectCandidatePool(
+  parsed: ParsedQuestion,
+  questions: QuestionRecord[],
+  index?: TrigramIndex,
+): QuestionRecord[] {
+  if (!index || questions.length === 0) {
+    return questions
+  }
+
+  const scoreById = new Map<number, number>()
+  const grams = new Set([
+    ...createTrigrams(parsed.normalizedQuestion),
+    ...createTrigrams(parsed.normalizedOptions),
+  ])
+
+  for (const gram of grams) {
+    for (const id of index[gram] ?? []) {
+      scoreById.set(id, (scoreById.get(id) ?? 0) + 1)
+    }
+  }
+
+  if (scoreById.size === 0) {
+    return questions
+  }
+
+  const byId = new Map(questions.map((question) => [question.id, question]))
+  return [...scoreById.entries()]
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 80)
+    .map(([id]) => byId.get(id))
+    .filter((question): question is QuestionRecord => Boolean(question))
+}
+
+function createTrigrams(text: string): string[] {
+  if (!text) {
+    return []
+  }
+  if (text.length <= 3) {
+    return [text]
+  }
+
+  const grams: string[] = []
+  for (let index = 0; index <= text.length - 3; index += 1) {
+    grams.push(text.slice(index, index + 3))
+  }
+  return grams
 }

@@ -81,8 +81,8 @@ Vue3 SPA
 | 屏幕捕获 | `getDisplayMedia` | 浏览器原生能力，必须由用户授权 |
 | 图像处理 | Canvas 2D API | 完成抽帧、裁剪和预处理 |
 | OCR | Tesseract.js | 纯前端 OCR，使用中文简体语言包 |
-| 数据库 | SQLite wasm | 题库以 SQLite 文件分发 |
-| 全文检索 | FTS5 trigram | 适合中文短文本模糊匹配 |
+| 数据库 | JSON 静态文件 | 分享版优先使用 `questions.json` 分发题库 |
+| 全文检索 | trigram 倒排索引 | 构建期生成 `trigram-index.json`，避免依赖 SQLite FTS5 |
 | 本地缓存 | IndexedDB + idb | 缓存题库、语言包、配置和未知题 |
 | 部署方式 | 静态托管 | 可部署到 Cloudflare Pages、Vercel 或普通静态服务器 |
 
@@ -237,44 +237,32 @@ export interface ParsedQuestion {
 
 ### 5.6 题库模块
 
-题库使用 SQLite 文件分发，浏览器首次下载后缓存到 IndexedDB。
+题库正式分享版使用 JSON 静态文件分发，浏览器首次下载后缓存到 IndexedDB。SQLite 构建保留为备用路线，不作为默认检索方案。
 
-主表：
+题目 JSON 结构：
 
-```sql
-CREATE TABLE questions (
-  id INTEGER PRIMARY KEY,
-  question TEXT NOT NULL,
-  normalized_question TEXT NOT NULL,
-  option_a TEXT,
-  option_b TEXT,
-  option_c TEXT,
-  option_d TEXT,
-  normalized_options TEXT,
-  answer TEXT NOT NULL,
-  answer_type TEXT DEFAULT 'single',
-  category TEXT,
-  sub_category TEXT,
-  tags TEXT,
-  source TEXT NOT NULL,
-  confidence REAL DEFAULT 1,
-  occurrence_count INTEGER DEFAULT 0,
-  question_hash TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
+```ts
+export interface QuestionIndexRecord {
+  id: number
+  question: string
+  normalizedQuestion: string
+  options: Record<'A' | 'B' | 'C' | 'D', string>
+  normalizedOptions: string
+  answer: 'A' | 'B' | 'C' | 'D'
+  category: string
+  subCategory: string
+  tags: string[]
+  source: string
+  confidence: number
+  occurrenceCount: number
+  questionHash: string
+}
 ```
 
-FTS 表：
+倒排索引结构：
 
-```sql
-CREATE VIRTUAL TABLE questions_fts USING fts5(
-  normalized_question,
-  normalized_options,
-  content = 'questions',
-  content_rowid = 'id',
-  tokenize = 'trigram'
-);
+```ts
+export type TrigramIndex = Record<string, number[]>
 ```
 
 分类表：
@@ -322,7 +310,7 @@ CREATE TABLE unknown_questions (
 
 设计要求：
 
-- `questions` 作为构建产物，前端运行时只读。
+- `questions.json` 和 `trigram-index.json` 作为构建产物，前端运行时只读。
 - 用户手动补充内容写入 `user_questions`。
 - 未匹配题目写入 `unknown_questions`。
 - 检索时同时查询主题库和用户补充题库。
@@ -550,4 +538,3 @@ export interface AnswerOverlayState {
 - 本地题库检索能否容忍 OCR 噪声。
 
 只有在这三个核心闭环跑通后，再继续完善分类树、未知题管理、自动更新和界面细节。
-

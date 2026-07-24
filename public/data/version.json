@@ -1,5 +1,7 @@
 {
-  "version": "demo-local",
-  "questionCount": 2,
-  "hash": "demo"
+  "version": "v2026.07.24",
+  "questionCount": 0,
+  "hash": "b584bc881e7d8c69f5a470d5ea86521f389f3c0c7d43c6ca08d050bda8c56891",
+  "searchMode": "json-trigram",
+  "generatedAt": "2026-07-24T10:16:14.674Z"
 }

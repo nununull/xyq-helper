@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vue-tsc --noEmit && vite build",
+    "crawl:175dt": "node crawler/175dt-crawler.mjs",
+    "build:index": "node scripts/build-index.mjs",
+    "build:db": "node scripts/build-db.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
@@ -17,6 +20,7 @@
     "vue": "^3.5.18"
   },
   "devDependencies": {
+    "sql.js": "^1.14.1",
     "typescript": "^5.8.3",
     "vue-tsc": "^2.2.12"
   }

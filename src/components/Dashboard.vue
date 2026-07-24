@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import AnswerOverlay from './AnswerOverlay.vue'
 import CapturePreview from './CapturePreview.vue'
 import OCRResult from './OCRResult.vue'
@@ -27,6 +27,10 @@ const parsedQuestion = ref<ParsedQuestion | null>(null)
 const busy = ref(false)
 
 const canCaptureFrame = computed(() => captureStore.status === 'active')
+
+onMounted(() => {
+  void dbStore.initializeQuestionIndex()
+})
 
 async function startCapture() {
   try {
@@ -64,8 +68,9 @@ async function recognizeOnce() {
     parsedQuestion.value = parseQuestion(result)
     const match = matchQuestion(
       parsedQuestion.value,
-      undefined,
+      dbStore.questions,
       configStore.config.matcher.minConfidence,
+      dbStore.trigramIndex,
     )
 
     matcherStore.setResult(match)
@@ -143,6 +148,7 @@ async function recognizeOnce() {
           <h2>状态</h2>
           <p>OCR：{{ ocrStore.status }}</p>
           <p>题库：{{ dbStore.version }} / {{ dbStore.questionCount }} 题</p>
+          <p>检索：{{ dbStore.searchMode }}</p>
           <p v-if="matcherStore.result">置信度：{{ Math.round(matcherStore.result.confidence * 100) }}%</p>
           <p v-if="ocrStore.error" class="error-text">{{ ocrStore.error }}</p>
         </section>
