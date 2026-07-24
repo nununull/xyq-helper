@@ -1,5 +1,7 @@
 node_modules/
 dist/
+.idea/
+.codegraph/
 public/data/*.sqlite
 .env
 .env.local
