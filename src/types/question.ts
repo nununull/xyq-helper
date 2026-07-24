@@ -14,7 +14,8 @@ export interface QuestionRecord {
   normalizedQuestion: string
   options: Record<AnswerOptionKey, string>
   normalizedOptions: string
-  answer: AnswerOptionKey
+  answer?: AnswerOptionKey
+  answerText?: string
   category: string
   source: string
 }

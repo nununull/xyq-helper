@@ -7,6 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "vue-tsc --noEmit && vite build",
     "crawl:175dt": "node crawler/175dt-crawler.mjs",
+    "merge:questions": "node scripts/merge-questions.mjs",
     "build:index": "node scripts/build-index.mjs",
     "build:db": "node scripts/build-db.mjs",
     "preview": "vite preview --host 0.0.0.0"

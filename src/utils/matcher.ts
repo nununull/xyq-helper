@@ -62,15 +62,41 @@ export function matchQuestion(
     return null
   }
 
+  const answer = best.question.answer ?? inferAnswerFromOptions(best.question.answerText, parsed.options)
+  if (!answer) {
+    return null
+  }
+
   return {
     questionId: best.question.id,
-    answer: best.question.answer,
+    answer,
     confidence: best.confidence,
     matchedQuestion: best.question.question,
     source: best.question.source,
     category: best.question.category,
     candidates,
   }
+}
+
+function inferAnswerFromOptions(
+  answerText: string | undefined,
+  options: ParsedQuestion['options'],
+) {
+  if (!answerText) {
+    return null
+  }
+
+  let bestKey: keyof ParsedQuestion['options'] | null = null
+  let bestScore = 0
+  for (const [key, optionText] of Object.entries(options)) {
+    const score = diceSimilarity(answerText, optionText ?? '')
+    if (score > bestScore) {
+      bestScore = score
+      bestKey = key as keyof ParsedQuestion['options']
+    }
+  }
+
+  return bestScore >= 0.5 ? bestKey : null
 }
 
 function selectCandidatePool(

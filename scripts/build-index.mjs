@@ -67,7 +67,8 @@ function normalizeRecords(records) {
   for (const record of records) {
     const question = String(record.question ?? '').trim()
     const answer = String(record.answer ?? '').trim().toUpperCase()
-    if (!question || !/^[ABCD]$/.test(answer)) {
+    const answerText = String(record.answerText ?? record.a ?? '').trim()
+    if (!question || (!/^[ABCD]$/.test(answer) && !answerText)) {
       continue
     }
 
@@ -76,8 +77,8 @@ function normalizeRecords(records) {
     const normalizedOptions = ['A', 'B', 'C', 'D']
       .map((key) => `${key}${normalizeText(options[key] ?? '')}`)
       .join('')
-    const hash = createHash('sha1')
-      .update(`${normalizedQuestion}|${normalizedOptions}|${answer}`)
+    const hash = record.contentHash ?? createHash('sha1')
+      .update(`${normalizedQuestion}|${normalizedOptions}|${answer}|${normalizeText(answerText)}`)
       .digest('hex')
 
     if (seen.has(hash)) {
@@ -96,14 +97,18 @@ function normalizeRecords(records) {
         D: String(options.D ?? ''),
       },
       normalizedOptions,
-      answer,
+      ...( /^[ABCD]$/.test(answer) ? { answer } : {} ),
+      answerText,
       category: String(record.category ?? ''),
       subCategory: String(record.subCategory ?? ''),
+      categories: Array.isArray(record.categories) ? record.categories : [],
       tags: Array.isArray(record.tags) ? record.tags : [],
+      sources: Array.isArray(record.sources) ? record.sources : [],
       source: String(record.source ?? 'unknown'),
       confidence: Number(record.confidence ?? 1),
       occurrenceCount: Number(record.occurrenceCount ?? 0),
       questionHash: hash,
+      contentHash: hash,
     })
   }
 

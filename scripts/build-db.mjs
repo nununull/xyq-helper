@@ -67,7 +67,8 @@ function normalizeRecords(records) {
   for (const record of records) {
     const question = String(record.question ?? '').trim()
     const answer = String(record.answer ?? '').trim().toUpperCase()
-    if (!question || !/^[ABCD]$/.test(answer)) {
+    const answerText = String(record.answerText ?? record.a ?? '').trim()
+    if (!question || (!/^[ABCD]$/.test(answer) && !answerText)) {
       continue
     }
 
@@ -77,7 +78,7 @@ function normalizeRecords(records) {
       .map((key) => `${key}${normalizeText(options[key] ?? '')}`)
       .join('')
     const questionHash = createHash('sha1')
-      .update(`${normalizedQuestion}|${normalizedOptions}|${answer}`)
+      .update(`${normalizedQuestion}|${normalizedOptions}|${answer}|${normalizeText(answerText)}`)
       .digest('hex')
 
     if (seen.has(questionHash)) {
@@ -93,7 +94,8 @@ function normalizeRecords(records) {
       optionC: String(options.C ?? ''),
       optionD: String(options.D ?? ''),
       normalizedOptions,
-      answer,
+      answer: /^[ABCD]$/.test(answer) ? answer : '',
+      answerText,
       answerType: record.answerType ?? 'single',
       category: record.category ?? '',
       subCategory: record.subCategory ?? '',
@@ -121,6 +123,7 @@ function createSchema(db) {
       option_d TEXT,
       normalized_options TEXT,
       answer TEXT NOT NULL,
+      answer_text TEXT,
       answer_type TEXT DEFAULT 'single',
       category TEXT,
       sub_category TEXT,
@@ -188,9 +191,9 @@ function insertQuestions(db, records, searchMode) {
   const insertQuestion = db.prepare(`
     INSERT INTO questions (
       question, normalized_question, option_a, option_b, option_c, option_d,
-      normalized_options, answer, answer_type, category, sub_category, tags,
+      normalized_options, answer, answer_text, answer_type, category, sub_category, tags,
       source, confidence, occurrence_count, question_hash, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   const insertFts = searchMode.startsWith('fts5')
     ? db.prepare(`
@@ -210,6 +213,7 @@ function insertQuestions(db, records, searchMode) {
       record.optionD,
       record.normalizedOptions,
       record.answer,
+      record.answerText,
       record.answerType,
       record.category,
       record.subCategory,

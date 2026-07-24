@@ -1,27 +1,30 @@
-import { mkdir, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(__dirname, '..')
 const baseUrl = 'https://175dt.com'
+const searchUrl = 'https://s.175dt.com/'
 const args = parseArgs(process.argv.slice(2))
 
 async function main() {
   const categoriesOutput = resolve(projectRoot, args.output ?? 'data/raw/175dt-categories.json')
   const questionsOutput = resolve(projectRoot, args.jsonl ?? 'data/raw/questions.jsonl')
+  const stateOutput = resolve(projectRoot, args.state ?? `${questionsOutput}.state.json`)
   const homeHtml = await fetchText(`${baseUrl}/5`)
-  const categories = parseCategories(homeHtml)
-  const questions = []
+  const categories = filterCategories(parseCategories(homeHtml), args.ids)
+  const seenQuestionHashes = new Set()
+  const questions = await loadExistingQuestions(questionsOutput, seenQuestionHashes)
+  const crawlState = await loadCrawlState(stateOutput)
 
-  if (args.seed) {
-    const seeds = args.seed.split(',').map((seed) => seed.trim()).filter(Boolean)
-    for (const category of categories) {
-      const html = await fetchText(`${baseUrl}${category.href}`)
-      for (const seed of seeds) {
-        questions.push(...parseQuestionsFromHtml(html, category, seed))
-      }
-      await sleep(Number(args.delay ?? 300))
+  const keywords = await loadKeywords(args)
+  if (keywords.length > 0) {
+    if (args.expand === 'true') {
+      await crawlWithExpansion({ categories, keywords, questions, seenQuestionHashes, questionsOutput, stateOutput, crawlState })
+    } else {
+      await crawlKeywordBatch({ categories, keywords, questions, seenQuestionHashes, questionsOutput, stateOutput, crawlState, round: 1 })
     }
   }
 
@@ -32,24 +35,185 @@ async function main() {
     crawledAt: new Date().toISOString(),
     categories,
   }, null, 2)}\n`, 'utf8')
-  await writeFile(
-    questionsOutput,
-    questions.map((question) => JSON.stringify(question)).join('\n') + (questions.length ? '\n' : ''),
-    'utf8',
-  )
+  if (args['rewrite-output'] === 'true') {
+    await writeFile(
+      questionsOutput,
+      questions.map((question) => JSON.stringify(question)).join('\n') + (questions.length ? '\n' : ''),
+      'utf8',
+    )
+  }
 
   console.log(`分类已写入：${categoriesOutput}`)
   console.log(`题目 JSONL 已写入：${questionsOutput}，数量：${questions.length}`)
   if (questions.length === 0) {
-    console.log('提示：175DT 当前静态 HTML 不暴露完整题库；脚本已完成分类抓取和题目解析框架。')
+    console.log('提示：未提供关键词或搜索无结果。使用 --kw 隋朝,李白 或 --keywords-file data/keywords.txt 抓取题目。')
   }
 }
 
-async function fetchText(url) {
+async function loadCrawlState(filePath) {
+  const content = await readFile(filePath, 'utf8').catch((error) => {
+    if (error.code === 'ENOENT') {
+      return ''
+    }
+    throw error
+  })
+
+  if (!content.trim()) {
+    return { processedKeys: [] }
+  }
+
+  const parsed = JSON.parse(content)
+  return {
+    processedKeys: Array.isArray(parsed.processedKeys) ? parsed.processedKeys : [],
+  }
+}
+
+async function saveCrawlState(filePath, crawlState) {
+  await mkdir(dirname(filePath), { recursive: true })
+  await writeFile(filePath, `${JSON.stringify({
+    ...crawlState,
+    updatedAt: new Date().toISOString(),
+  }, null, 2)}\n`, 'utf8')
+}
+
+async function loadExistingQuestions(filePath, seenQuestionHashes) {
+  const content = await readFile(filePath, 'utf8').catch((error) => {
+    if (error.code === 'ENOENT') {
+      return ''
+    }
+    throw error
+  })
+
+  const records = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+
+  for (const record of records) {
+    seenQuestionHashes.add(createQuestionHash(record))
+  }
+
+  return records
+}
+
+async function crawlWithExpansion({ categories, keywords, questions, seenQuestionHashes, questionsOutput, stateOutput, crawlState }) {
+  const rounds = Math.max(1, Number(args.rounds ?? 3))
+  const maxKeywordsPerRound = Math.max(1, Number(args['max-keywords-per-round'] ?? 80))
+  const usedKeywords = new Set()
+  let currentKeywords = keywords
+
+  for (let round = 1; round <= rounds && currentKeywords.length > 0; round += 1) {
+    const roundKeywords = currentKeywords
+      .filter((keyword) => !usedKeywords.has(keyword))
+      .slice(0, maxKeywordsPerRound)
+
+    if (roundKeywords.length === 0) {
+      break
+    }
+
+    roundKeywords.forEach((keyword) => usedKeywords.add(keyword))
+    const beforeCount = questions.length
+    const newRecords = await crawlKeywordBatch({
+      categories,
+      keywords: roundKeywords,
+      questions,
+      seenQuestionHashes,
+      questionsOutput,
+      stateOutput,
+      crawlState,
+      round,
+    })
+
+    currentKeywords = extractKeywords(newRecords)
+      .filter((keyword) => !usedKeywords.has(keyword))
+      .slice(0, maxKeywordsPerRound)
+
+    console.log(`第 ${round} 轮完成：新增 ${questions.length - beforeCount} 题，下一轮关键词 ${currentKeywords.length} 个`)
+  }
+}
+
+async function crawlKeywordBatch({ categories, keywords, questions, seenQuestionHashes, questionsOutput, stateOutput, crawlState, round }) {
+  const newRecords = []
+  const processedKeys = new Set(crawlState.processedKeys)
+
+  for (const category of categories) {
+    for (const keyword of keywords) {
+      const processedKey = `${category.id}|${keyword}`
+      if (processedKeys.has(processedKey)) {
+        continue
+      }
+
+      const hits = await searchQuestions(category, keyword)
+      for (const hit of hits) {
+        const questionHash = createQuestionHash(hit)
+        if (seenQuestionHashes.has(questionHash)) {
+          continue
+        }
+
+        const record = { ...hit, crawlRound: round, questionHash }
+        seenQuestionHashes.add(questionHash)
+        questions.push(record)
+        newRecords.push(record)
+        await appendQuestion(questionsOutput, record)
+      }
+
+      processedKeys.add(processedKey)
+      crawlState.processedKeys = [...processedKeys]
+      await saveCrawlState(stateOutput, crawlState)
+      await sleep(Number(args.delay ?? 300))
+    }
+  }
+
+  return newRecords
+}
+
+async function appendQuestion(filePath, record) {
+  await mkdir(dirname(filePath), { recursive: true })
+  await appendFile(filePath, `${JSON.stringify(record)}\n`, 'utf8')
+}
+
+async function loadKeywords(parsedArgs) {
+  const keywords = []
+
+  if (parsedArgs.kw) {
+    keywords.push(...parsedArgs.kw.split(',').map((keyword) => keyword.trim()).filter(Boolean))
+  }
+
+  if (parsedArgs['keywords-file']) {
+    const filePath = resolve(projectRoot, parsedArgs['keywords-file'])
+    const content = await readFile(filePath, 'utf8')
+    keywords.push(...content.split(/\r?\n/).map((keyword) => keyword.trim()).filter(Boolean))
+  }
+
+  return [...new Set(keywords)]
+}
+
+async function searchQuestions(category, keyword) {
+  const url = new URL(searchUrl)
+  url.searchParams.set('id', category.id)
+  url.searchParams.set('kw', keyword)
+  url.searchParams.set('c', String(args.count ?? 10000))
+
+  const text = await fetchText(url.toString(), {
+    accept: '*/*',
+    origin: baseUrl,
+    referer: `${baseUrl}/`,
+  })
+  const payload = JSON.parse(text)
+  const hits = Array.isArray(payload.hits) ? payload.hits : []
+
+  return hits
+    .map((hit) => normalizeSearchHit(hit, category, keyword))
+    .filter(Boolean)
+}
+
+async function fetchText(url, extraHeaders = {}) {
   const response = await fetch(url, {
     headers: {
       'user-agent': 'xyq-helper-crawler/0.1',
       accept: 'text/html,application/xhtml+xml',
+      ...extraHeaders,
     },
   })
   if (!response.ok) {
@@ -76,28 +240,85 @@ function parseCategories(html) {
   return categories
 }
 
-function parseQuestionsFromHtml(html, category, seed) {
-  const resultMatch = html.match(/<div id="result"[^>]*>([\s\S]*?)<\/div>/)
-  const resultText = cleanHtml(resultMatch?.[1] ?? '')
-  if (!resultText.includes(seed)) {
-    return []
+function filterCategories(categories, ids) {
+  if (!ids) {
+    return categories
   }
 
-  const answerMatch = resultText.match(/答案[:：]\s*([ABCD])/i)
-  if (!answerMatch) {
-    return []
+  const wanted = new Set(ids.split(',').map((id) => id.trim()).filter(Boolean))
+  return categories.filter((category) => wanted.has(category.id))
+}
+
+function normalizeSearchHit(hit, category, keyword) {
+  const question = cleanHtml(String(hit.q ?? ''))
+  const answerText = cleanHtml(String(hit.a ?? ''))
+
+  if (!question || !answerText) {
+    return null
   }
 
-  return [{
-    question: resultText.replace(/答案[:：]\s*[ABCD].*$/i, '').trim(),
+  return {
+    question,
     options: {},
-    answer: answerMatch[1].toUpperCase(),
+    answerText,
     category: category.name,
     subCategory: category.name,
     source: '175dt',
     sourceUrl: `${baseUrl}${category.href}`,
-    confidence: 0.8,
-  }]
+    sourceKeyword: keyword,
+    confidence: 0.85,
+  }
+}
+
+function createQuestionHash(record) {
+  return createHash('sha1')
+    .update([
+      cleanTextForHash(record.question),
+      cleanTextForHash(record.answerText ?? record.answer ?? ''),
+      record.category ?? '',
+      record.subCategory ?? '',
+    ].join('|'))
+    .digest('hex')
+}
+
+function extractKeywords(records) {
+  const keywords = new Set()
+  const stopWords = new Set(['下列', '以下', '哪个', '哪位', '多少', '什么', '不是', '的是', '关于', '组成'])
+
+  for (const record of records) {
+    for (const token of segmentChinese(`${record.question} ${record.answerText ?? ''}`)) {
+      if (!stopWords.has(token)) {
+        keywords.add(token)
+      }
+    }
+  }
+
+  return [...keywords]
+}
+
+function segmentChinese(text) {
+  const normalized = cleanTextForHash(text)
+  const tokens = new Set()
+
+  for (let size = 2; size <= 4; size += 1) {
+    for (let index = 0; index <= normalized.length - size; index += 1) {
+      const token = normalized.slice(index, index + size)
+      if (/^[\u4e00-\u9fa5]+$/.test(token)) {
+        tokens.add(token)
+      }
+    }
+  }
+
+  return [...tokens]
+}
+
+function cleanTextForHash(text) {
+  return String(text)
+    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (char) => String.fromCharCode(char.charCodeAt(0) - 0xfee0))
+    .replace(/<[^>]+>/g, '')
+    .replace(/[，。！？、；：“”‘’（）【】《》·,.!?;:"'()[\]<>]/g, '')
+    .replace(/\s+/g, '')
+    .toLowerCase()
 }
 
 function cleanHtml(html) {

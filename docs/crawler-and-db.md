@@ -5,12 +5,29 @@
 已实现三个脚本：
 
 - `crawler/175dt-crawler.mjs`：抓取 175DT 分类导航，并输出标准 JSONL 题库文件。
+- `scripts/merge-questions.mjs`：合并多个平台的 JSONL，按内容 hash 去重并合并来源。
 - `scripts/build-index.mjs`：读取 JSONL，清洗去重，生成 `public/data/questions.json`、`public/data/trigram-index.json` 和 `public/data/version.json`。
 - `scripts/build-db.mjs`：备用 SQLite 构建脚本，不作为默认分享版检索方案。
 
 ## 重要限制
 
-175DT 当前页面的完整题库没有直接出现在静态 HTML 中，搜索逻辑被编译在 wasm 内部。当前脚本可以稳定抓取分类结构，但无法从静态页面直接批量导出完整题库。
+175DT 当前页面的完整题库没有直接出现在静态 HTML 中，搜索逻辑通过独立搜索接口完成。当前已确认可用接口：
+
+```text
+https://s.175dt.com/?id=<分类ID>&kw=<关键词>&c=10000
+```
+
+示例：
+
+```text
+https://s.175dt.com/?id=44&kw=隋朝&c=10000
+```
+
+接口返回结构：
+
+```json
+{"status":200,"hits":[{"q":"题干 HTML","a":"答案文本"}]}
+```
 
 因此当前链路已经具备：
 
@@ -22,11 +39,11 @@
 - FTS5 能力检测。
 - 无 FTS5 时退回普通索引。
 
-但还缺少：
+仍然缺少：
 
-- 175DT 内部搜索接口的稳定调用方式。
-- 或合法的数据导出来源。
-- 或人工整理后的 JSONL 输入。
+- 全量关键词种子列表。
+- 分类与关键词组合的去重抓取策略。
+- 多来源答案交叉校验。
 
 ## 使用命令
 
@@ -36,10 +53,100 @@
 npm run crawl:175dt
 ```
 
+只抓指定分类和关键词：
+
+```powershell
+node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝
+```
+
+抓多个分类和多个关键词：
+
+```powershell
+node crawler/175dt-crawler.mjs --ids 44,15,16 --kw 隋朝,李白,科举
+```
+
+从文件读取关键词，每行一个：
+
+```powershell
+node crawler/175dt-crawler.mjs --ids 44 --keywords-file data/keywords.txt
+```
+
+滚雪球抓取：
+
+```powershell
+node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝 --expand true --rounds 3 --max-keywords-per-round 80
+```
+
+参数说明：
+
+- `--expand true`：启用滚雪球模式。
+- `--rounds 3`：最多扩展 3 轮。
+- `--max-keywords-per-round 80`：每轮最多搜索 80 个新关键词。
+- `--delay 300`：每次请求后的等待毫秒数，默认 300。
+
+滚雪球流程：
+
+```text
+初始关键词
+→ 调用 175DT 搜索接口
+→ 写入新题并按题干 + 答案去重
+→ 从新题题干和答案中提取 2-4 字中文关键词
+→ 下一轮继续搜索
+→ 直到达到轮数或没有新关键词
+```
+
+## 断点续跑
+
+爬虫默认边抓边写。每抓到一条新题，会立即追加到 `questions.jsonl`；每完成一个 `分类ID + 关键词` 请求，会写入状态文件。
+
+默认状态文件：
+
+```text
+data/raw/questions.jsonl.state.json
+```
+
+状态文件记录已经处理过的关键词组合：
+
+```json
+{"processedKeys":["44|隋朝"]}
+```
+
+因此脚本中途停止后，重新执行同样命令即可：
+
+```powershell
+node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝 --expand true --rounds 3 --delay 1200
+```
+
+已写入的题目不会重复入库，已完成的关键词也不会重复请求。
+
+如果需要强制重新请求同一批关键词，可以删除对应 `.state.json` 文件，或者指定新的状态文件：
+
+```powershell
+node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝 --state data/raw/manual-rerun.state.json
+```
+
+如果需要把当前 JSONL 重新清洗排序，执行：
+
+```powershell
+npm run merge:questions
+```
+
 构建正式前端检索索引：
 
 ```powershell
 npm run build:index
+```
+
+合并多个平台题库：
+
+```powershell
+node scripts/merge-questions.mjs --input data/import --output data/raw/questions.jsonl
+```
+
+也可以指定多个 JSONL 文件：
+
+```powershell
+node scripts/merge-questions.mjs --input data/import/175dt.jsonl,data/import/yzz.jsonl --output data/raw/questions.jsonl
 ```
 
 构建备用 SQLite：
@@ -59,7 +166,52 @@ node scripts/build-index.mjs --input data/raw/questions.jsonl --questions public
 每行一条题目：
 
 ```json
-{"question":"下列关于唐朝诗人李白的说法错误的是？","options":{"A":"他出生于碎叶城","B":"他号称诗仙","C":"他是浪漫主义诗人","D":"他与杜甫并称李杜"},"answer":"A","category":"科举","subCategory":"乡试","source":"175dt"}
+{"question":"隋朝的“隋”字由多少笔画组成？","options":{},"answerText":"十一画","category":"金兜洞兕大王","subCategory":"金兜洞兕大王","source":"175dt"}
+```
+
+175DT 搜索接口返回的是答案文本，不是 A/B/C/D。前端匹配时会将 `answerText` 与 OCR 识别到的选项做相似度比较，再反推出答案字母。
+
+## 后续更新流程
+
+175DT 增量更新：
+
+```powershell
+node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝 --expand true --rounds 3
+npm run merge:questions
+npm run build:index
+```
+
+多平台更新：
+
+```powershell
+node scripts/merge-questions.mjs --input data/import --output data/raw/questions.jsonl
+npm run build:index
+```
+
+去重规则：
+
+- `contentHash = 标准化题干 + 标准化答案文本`。
+- 相同 `contentHash` 视为同一道题。
+- 重复题不会丢弃来源，而是合并到 `sources` 数组。
+- 多来源题会提高 `confidence`，最高为 1。
+
+## 请求频率建议
+
+当前脚本默认 `--delay 300`，也就是每次请求后等待 300ms。这个频率不保证不会触发站点风控，因为是否封 IP 取决于 175DT 的服务端策略、同 IP 请求量、时间段和站点负载。
+
+建议：
+
+- 日常抓取使用 `--delay 800` 到 `--delay 1500`。
+- 滚雪球模式先限制 `--ids`，不要一上来全分类。
+- `--max-keywords-per-round` 建议从 30 到 80 开始。
+- `--rounds` 建议从 2 到 4 开始。
+- 如果出现 403、429、连接超时或大量空结果，立刻停止，隔一段时间再跑。
+- 不要并发请求，不要多开脚本。
+
+保守示例：
+
+```powershell
+node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝 --expand true --rounds 3 --max-keywords-per-round 50 --delay 1200
 ```
 
 ## JSON trigram 索引策略
@@ -101,4 +253,9 @@ SQLite 构建结果会在 `version.json` 中记录 `searchMode`：
 
 ## 后续建议
 
-下一步应使用浏览器网络面板或自动化浏览器捕获 175DT 搜索时的真实请求。如果能得到稳定接口，再把接口调用补进 `crawler/175dt-crawler.mjs`，直接生成完整 `questions.jsonl`。
+下一步应准备高覆盖关键词种子。建议来源：
+
+- 常见历史、人文、地理、游戏名词。
+- 已知题库题干中的高频词。
+- 用户本地未知题回流关键词。
+- 其他题库站点的题干关键词。

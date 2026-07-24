@@ -1,1 +1,70 @@
-[]
+[
+  {
+    "id": 1,
+    "question": "隋朝 的“隋”字由多少笔画组成？",
+    "normalizedQuestion": "隋朝的隋字由多少笔画组成",
+    "options": {
+      "A": "",
+      "B": "",
+      "C": "",
+      "D": ""
+    },
+    "normalizedOptions": "ABCD",
+    "answerText": "十一画",
+    "category": "金兜洞兕大王",
+    "subCategory": "金兜洞兕大王",
+    "categories": [
+      "金兜洞兕大王"
+    ],
+    "tags": [],
+    "sources": [
+      {
+        "name": "175dt",
+        "url": "",
+        "category": "金兜洞兕大王",
+        "subCategory": "金兜洞兕大王",
+        "keyword": "",
+        "file": "data\\raw\\questions.jsonl"
+      }
+    ],
+    "source": "175dt",
+    "confidence": 0.85,
+    "occurrenceCount": 0,
+    "questionHash": "590c7d91ef876035ead87692a372437479147a6c",
+    "contentHash": "590c7d91ef876035ead87692a372437479147a6c"
+  },
+  {
+    "id": 2,
+    "question": "隋朝 末年唐国公李渊是在何地起兵",
+    "normalizedQuestion": "隋朝末年唐国公李渊是在何地起兵",
+    "options": {
+      "A": "",
+      "B": "",
+      "C": "",
+      "D": ""
+    },
+    "normalizedOptions": "ABCD",
+    "answerText": "太原",
+    "category": "金兜洞兕大王",
+    "subCategory": "金兜洞兕大王",
+    "categories": [
+      "金兜洞兕大王"
+    ],
+    "tags": [],
+    "sources": [
+      {
+        "name": "175dt",
+        "url": "",
+        "category": "金兜洞兕大王",
+        "subCategory": "金兜洞兕大王",
+        "keyword": "",
+        "file": "data\\raw\\questions.jsonl"
+      }
+    ],
+    "source": "175dt",
+    "confidence": 0.85,
+    "occurrenceCount": 0,
+    "questionHash": "a087010b8d4d20348d867e31d86bf1239353ca9c",
+    "contentHash": "a087010b8d4d20348d867e31d86bf1239353ca9c"
+  }
+]
