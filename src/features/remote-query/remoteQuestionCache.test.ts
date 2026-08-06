@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto'
 import { openDB } from 'idb'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createRemoteQuestionCacheRepository } from './remoteQuestionCache'
+import { upgradeLocalStorageDatabase } from '../../composables/useLocalStorageDB'
 
 const databaseNames: string[] = []
 
@@ -21,6 +22,35 @@ afterEach(async () => {
 })
 
 describe('远程题目缓存', () => {
+  it('从 v1 升级到 v2 时保留旧 store 和数据并创建远程缓存 store', async () => {
+    const name = `xyq-helper-test-${crypto.randomUUID()}`
+    databaseNames.push(name)
+    const v1Database = await openDB(name, 1, {
+      /** 构造升级前的 v1 本地数据库结构。 */
+      upgrade(database) {
+        database.createObjectStore('config')
+        database.createObjectStore('unknown_questions', { keyPath: 'id', autoIncrement: true })
+        database.createObjectStore('user_questions', { keyPath: 'id', autoIncrement: true })
+      },
+    })
+    await v1Database.put('config', { enabled: true }, 'app')
+    await v1Database.add('unknown_questions', {
+      question: '旧未知题', options: {}, ocrConfidence: 0.5, createdAt: '2026-08-06', status: 'pending',
+    })
+    await v1Database.add('user_questions', { question: '旧用户题' })
+    v1Database.close()
+
+    const v2Database = await openDB(name, 2, { upgrade: upgradeLocalStorageDatabase })
+
+    expect(v2Database.objectStoreNames.contains('config')).toBe(true)
+    expect(v2Database.objectStoreNames.contains('unknown_questions')).toBe(true)
+    expect(v2Database.objectStoreNames.contains('user_questions')).toBe(true)
+    expect(v2Database.objectStoreNames.contains('remote_question_cache')).toBe(true)
+    expect(await v2Database.get('config', 'app')).toEqual({ enabled: true })
+    expect((await v2Database.getAll('unknown_questions'))[0]).toMatchObject({ question: '旧未知题' })
+    expect((await v2Database.getAll('user_questions'))[0]).toMatchObject({ question: '旧用户题' })
+    v2Database.close()
+  })
   it('按分类和题目指纹保存并读取成功结果', async () => {
     const db = await createDatabase()
     const repository = createRemoteQuestionCacheRepository(db)

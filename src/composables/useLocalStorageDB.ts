@@ -1,21 +1,23 @@
 import { openDB } from 'idb'
+import type { IDBPDatabase } from 'idb'
 import type { AppConfig } from '../types/config'
 import type { UnknownQuestion } from '../types/question'
 import type { RemoteQuestionCache } from '../types/remoteQuestion'
 import { createRemoteQuestionCacheRepository } from '../features/remote-query/remoteQuestionCache'
 
-const dbPromise = openDB('xyq-helper', 2, {
-  upgrade(db, oldVersion) {
-    if (oldVersion < 1) {
-      db.createObjectStore('config')
-      db.createObjectStore('unknown_questions', { keyPath: 'id', autoIncrement: true })
-      db.createObjectStore('user_questions', { keyPath: 'id', autoIncrement: true })
-    }
-    if (!db.objectStoreNames.contains('remote_question_cache')) {
-      db.createObjectStore('remote_question_cache', { keyPath: 'id' })
-    }
-  },
-})
+/** 将本地数据库升级到当前结构，同时保留既有 store 和数据。 */
+export function upgradeLocalStorageDatabase(db: IDBPDatabase, oldVersion: number): void {
+  if (oldVersion < 1) {
+    db.createObjectStore('config')
+    db.createObjectStore('unknown_questions', { keyPath: 'id', autoIncrement: true })
+    db.createObjectStore('user_questions', { keyPath: 'id', autoIncrement: true })
+  }
+  if (!db.objectStoreNames.contains('remote_question_cache')) {
+    db.createObjectStore('remote_question_cache', { keyPath: 'id' })
+  }
+}
+
+const dbPromise = openDB('xyq-helper', 2, { upgrade: upgradeLocalStorageDatabase })
 
 /** 保存应用配置。 */
 export async function saveConfig(config: AppConfig): Promise<void> {
