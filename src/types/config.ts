@@ -61,8 +61,13 @@ type PartialAppConfig = {
 
 /** 将持久化配置与当前默认值按分组深层合并，兼容旧版本缺失字段。 */
 export function mergeAppConfig(config: PartialAppConfig | null | undefined): AppConfig {
+  const capture = { ...defaultAppConfig.capture, ...config?.capture }
   return {
-    capture: { ...defaultAppConfig.capture, ...config?.capture },
+    capture: {
+      ...capture,
+      questionRegion: capture.questionRegion ? { ...capture.questionRegion } : null,
+      optionsRegion: capture.optionsRegion ? { ...capture.optionsRegion } : null,
+    },
     ocr: { ...defaultAppConfig.ocr, ...config?.ocr },
     matcher: { ...defaultAppConfig.matcher, ...config?.matcher },
     remoteQuery: { ...defaultAppConfig.remoteQuery, ...config?.remoteQuery },

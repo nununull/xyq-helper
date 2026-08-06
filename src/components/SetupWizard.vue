@@ -2,18 +2,21 @@
 import { ref } from 'vue'
 import AreaSelector from './AreaSelector.vue'
 import type { CaptureRegion } from '../types/capture'
+import { mergeAppConfig } from '../types/config'
 import { useConfigStore } from '../stores/config'
 
 const configStore = useConfigStore()
 const step = ref<'intro' | 'question' | 'options'>('intro')
 
+/** 将当前框选区域转换为普通对象并按步骤持久化。 */
 async function saveRegion(kind: 'question' | 'options', region: CaptureRegion) {
-  const config = structuredClone(configStore.config)
+  const config = mergeAppConfig(configStore.config)
   if (kind === 'question') {
-    config.capture.questionRegion = region
+    config.capture.questionRegion = { ...region }
+    await configStore.update(config)
     step.value = 'options'
   } else {
-    config.capture.optionsRegion = region
+    config.capture.optionsRegion = { ...region }
     config.capture.devicePixelRatio = window.devicePixelRatio || 1
     await configStore.update(config)
   }
