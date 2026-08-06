@@ -280,7 +280,7 @@ export function createRecognitionController(
     const startedAt = performance.now()
     const categoryId = getCategoryId()
     const fingerprint = createQuestionFingerprint(parsed.normalizedQuestion)
-    if (!categoryId || fingerprint === recognitionStore.lastCompletedFingerprint) return
+    if (!categoryId) return
 
     activeRequestController?.abort()
     const requestController = new AbortController()
@@ -303,6 +303,7 @@ export function createRecognitionController(
         await publishCachedResult(cached, parsed, startedAt)
         return
       }
+      if (fingerprint === recognitionStore.lastCompletedFingerprint) return
 
       recognitionStore.setPhase('primaryQuery', '正在查询远程题库')
       const primary = await query(categoryId, cleanRemoteQueryText(parsed.questionText), {
@@ -351,13 +352,13 @@ export function createRecognitionController(
   /** 捕获并串行处理一帧，所有异步边界均校验识别代次。 */
   async function processFrame(scheduledGeneration: number): Promise<void> {
     if (scheduledGeneration !== lifecycleGeneration) return
-    matcherStore.setError('')
-    recognitionStore.setPhase('capturing', '正在捕获题目画面')
     const captured = await captureFrame()
     if (scheduledGeneration !== lifecycleGeneration || !captured) return
     if (captured.frameHash === lastProcessedFrameHash) return
     lastProcessedFrameHash = captured.frameHash
 
+    matcherStore.setError('')
+    recognitionStore.setPhase('capturing', '正在处理新的题目画面')
     recognitionStore.setPhase('recognizing', '正在识别题目文字')
     const recognized = await recognizeFrame(captured)
     if (scheduledGeneration !== lifecycleGeneration) return
@@ -369,7 +370,10 @@ export function createRecognitionController(
 
     const fingerprint = createQuestionFingerprint(stable.normalizedQuestion)
     lastStableFingerprint = fingerprint
-    if (fingerprint === recognitionStore.lastCompletedFingerprint) return
+    if (fingerprint !== activeFingerprint) {
+      invalidateActiveSolve()
+      activeFingerprint = fingerprint
+    }
     if ((questionFailureCooldowns.get(fingerprint) ?? 0) > now()) {
       recognitionStore.setPhase('waitingRetry', '当前题目暂在失败冷却中')
       return
@@ -381,7 +385,7 @@ export function createRecognitionController(
       return
     }
 
-    if (fingerprint === activeFingerprint && activeRequestController) return
+    if (activeRequestController) return
     const ocrConfidence = (recognized.question.confidence + recognized.options.confidence) / 2
     void solveStableQuestion(stable, ocrConfidence)
   }

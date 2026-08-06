@@ -3,6 +3,7 @@ import type { CaptureFrame } from '../../types/capture'
 import type { MatchResult } from '../../types/match'
 import type { OCRResult } from '../../types/ocr'
 import type { RecognitionPhase, RemoteQuestionCache, RemoteQueryResult } from '../../types/remoteQuestion'
+import { createQuestionFingerprint } from '../remote-query/queryText'
 import { createRecognitionController, type RecognitionControllerDependencies } from './useRecognitionController'
 
 vi.mock('../../composables/useLocalStorageDB', () => ({
@@ -28,10 +29,13 @@ function frame(frameHash: string): CaptureFrame {
 }
 
 /** 构造能够稳定解析为同一题目的 OCR 结果。 */
-function ocrResult(text = questionText): OCRResult {
+function ocrResult(
+  text = questionText,
+  optionsText = 'A. 李白 B. 杜甫 C. 李贺 D. 白居易',
+): OCRResult {
   return {
     question: { text, confidence: 0.96 },
-    options: { text: 'A. 李白 B. 杜甫 C. 李贺 D. 白居易', confidence: 0.94 },
+    options: { text: optionsText, confidence: 0.94 },
     durationMs: 10,
   }
 }
@@ -86,6 +90,7 @@ function createHarness(options: {
   frames?: CaptureFrame[]
   query?: RecognitionControllerDependencies['query']
   readCache?: RecognitionControllerDependencies['readCache']
+  writeCache?: RecognitionControllerDependencies['writeCache']
   recognizeFrame?: RecognitionControllerDependencies['recognizeFrame']
   now?: () => number
 } = {}): Harness {
@@ -112,7 +117,9 @@ function createHarness(options: {
   const readCache = vi.fn<RecognitionControllerDependencies['readCache']>(
     options.readCache ?? (async () => undefined),
   )
-  const writeCache = vi.fn<RecognitionControllerDependencies['writeCache']>(async () => undefined)
+  const writeCache = vi.fn<RecognitionControllerDependencies['writeCache']>(
+    options.writeCache ?? (async () => undefined),
+  )
 
   const controller = createRecognitionController({
     captureFrame,
@@ -257,7 +264,7 @@ describe('串行连续识别控制器', () => {
 
   it('主查询超时后不会执行降级查询', async () => {
     const harness = createHarness({
-      frames: [frame('one'), frame('two')],
+      frames: [frame('one'), frame('two'), frame('two')],
       query: async () => ({ kind: 'timeout', message: '远程题库响应超时' }),
     })
 
@@ -265,9 +272,13 @@ describe('串行连续识别控制器', () => {
     await waitForCapturedFrames(harness, 1)
     await advanceFrame(harness, 2)
     await vi.waitFor(() => expect(harness.recognition.phase).toBe('waitingRetry'))
-    harness.controller.stop()
+    await advanceFrame(harness, 3)
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
     expect(harness.query).toHaveBeenCalledTimes(1)
+    expect(harness.matcher.error).toBe('远程题库响应超时')
+    expect(harness.recognition.phase).toBe('waitingRetry')
+    harness.controller.stop()
   })
 
   it('主查询和降级查询均为空时显示未查询到文案', async () => {
@@ -439,6 +450,113 @@ describe('串行连续识别控制器', () => {
     expect(harness.matcher.result).toMatchObject({ answerText: '杜甫', matchedQuestion: newQuestion })
     expect(harness.matcher.result?.matchedQuestion).not.toBe(questionText)
     harness.controller.stop()
+  })
+
+  it('切换到已完成题目时仍会立即中止旧题请求', async () => {
+    const completedQuestion = '被称为“诗圣”的唐代诗人是谁？'
+    let resolveOldQuery!: (result: RemoteQueryResult) => void
+    let oldSignal: AbortSignal | undefined
+    const harness = createHarness({
+      frames: [frame('old-one'), frame('old-two'), frame('done-one'), frame('done-two')],
+      recognizeFrame: async (captured) => ocrResult(
+        captured.frameHash.startsWith('done') ? completedQuestion : questionText,
+      ),
+      query: async (_categoryId, _queryText, options) => {
+        oldSignal = options.signal
+        return await new Promise<RemoteQueryResult>((resolve) => {
+          resolveOldQuery = resolve
+        })
+      },
+    })
+    harness.recognition.lastCompletedFingerprint = createQuestionFingerprint(completedQuestion)
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await advanceFrame(harness, 2)
+    await vi.waitFor(() => expect(harness.query).toHaveBeenCalledTimes(1))
+    await advanceFrame(harness, 3)
+    await advanceFrame(harness, 4)
+
+    expect(oldSignal?.aborted).toBe(true)
+    expect(harness.query).toHaveBeenCalledTimes(1)
+    resolveOldQuery(successfulQuery())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(harness.matcher.result).toBeNull()
+    harness.controller.stop()
+  })
+
+  it('切换到冷却题目时仍会立即中止旧题请求', async () => {
+    const cooledQuestion = '被称为“诗圣”的唐代诗人是谁？'
+    let resolveOldQuery!: (result: RemoteQueryResult) => void
+    let oldSignal: AbortSignal | undefined
+    const harness = createHarness({
+      frames: [
+        frame('cool-one'), frame('cool-two'),
+        frame('old-one'), frame('old-two'),
+        frame('cool-three'), frame('cool-four'),
+      ],
+      recognizeFrame: async (captured) => ocrResult(
+        captured.frameHash.startsWith('cool') ? cooledQuestion : questionText,
+      ),
+      query: vi.fn()
+        .mockResolvedValueOnce({ kind: 'timeout', message: '远程题库响应超时' })
+        .mockImplementationOnce(async (_categoryId, _queryText, options) => {
+          oldSignal = options.signal
+          return await new Promise<RemoteQueryResult>((resolve) => {
+            resolveOldQuery = resolve
+          })
+        }),
+    })
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await advanceFrame(harness, 2)
+    await vi.waitFor(() => expect(harness.recognition.phase).toBe('waitingRetry'))
+    await advanceFrame(harness, 3)
+    await advanceFrame(harness, 4)
+    await vi.waitFor(() => expect(harness.query).toHaveBeenCalledTimes(2))
+    await advanceFrame(harness, 5)
+    await advanceFrame(harness, 6)
+
+    expect(oldSignal?.aborted).toBe(true)
+    expect(harness.query).toHaveBeenCalledTimes(2)
+    resolveOldQuery(successfulQuery())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(harness.matcher.result).toBeNull()
+    harness.controller.stop()
+  })
+
+  it('已完成题目选项重排时从缓存重新推导答案字母且不重复远程查询', async () => {
+    let stored: RemoteQuestionCache | undefined
+    const harness = createHarness({
+      frames: [frame('one'), frame('two'), frame('three'), frame('four')],
+      recognizeFrame: async (captured) => ocrResult(
+        questionText,
+        captured.frameHash === 'one' || captured.frameHash === 'two'
+          ? 'A. 李白 B. 杜甫 C. 李贺 D. 白居易'
+          : 'A. 李贺 B. 李白 C. 杜甫 D. 白居易',
+      ),
+      readCache: async () => stored,
+      writeCache: async (record) => {
+        stored = record
+      },
+    })
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await advanceFrame(harness, 2)
+    await vi.waitFor(() => expect(harness.matcher.result?.answer).toBe('C'))
+    await advanceFrame(harness, 3)
+    await vi.waitFor(() => expect(harness.matcher.result?.answer).toBe('A'))
+    await advanceFrame(harness, 4)
+    await vi.waitFor(() => expect(harness.readCache).toHaveBeenCalledTimes(3))
+    harness.controller.stop()
+
+    expect(harness.readCache).toHaveBeenCalledTimes(3)
+    expect(harness.query).toHaveBeenCalledTimes(1)
+    expect(harness.matcher.result).toMatchObject({ answer: 'A', resultSource: 'cache' })
   })
 
   it('retry 会优先中止待决请求，使旧失败无法阻止新查询', async () => {
