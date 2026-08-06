@@ -15,6 +15,11 @@ export interface AppConfig {
     topK: number
     minConfidence: number
   }
+  /** 远程题库查询使用的活动分类与单次请求超时。 */
+  remoteQuery: {
+    categoryId: string
+    requestTimeoutMs: number
+  }
   overlay: {
     opacity: number
     autoHideMs: number
@@ -38,6 +43,10 @@ export const defaultAppConfig: AppConfig = {
   matcher: {
     topK: 5,
     minConfidence: 0.45,
+  },
+  remoteQuery: {
+    categoryId: '',
+    requestTimeoutMs: 1_500,
   },
   overlay: {
     opacity: 0.88,
