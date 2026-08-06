@@ -3,6 +3,7 @@ import type { RecognitionPhase } from '../types/remoteQuestion'
 
 type ResultSource = 'local' | 'cache' | 'remote' | null
 
+/** 创建识别状态的初始值，供 Store 初始化和重置复用。 */
 const initialState = () => ({
   phase: 'idle' as RecognitionPhase,
   message: '',
