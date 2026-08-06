@@ -1,6 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 
 describe('应用配置迁移', () => {
+  it('新安装默认以每秒两帧持续捕获', async () => {
+    vi.stubGlobal('window', { devicePixelRatio: 2 })
+    const { defaultAppConfig } = await import('./config')
+
+    expect(defaultAppConfig.capture.captureFps).toBe(2)
+  })
+
   it('旧配置缺少远程查询字段时补充默认值并保留已有嵌套值', async () => {
     vi.stubGlobal('window', { devicePixelRatio: 2 })
     const { mergeAppConfig } = await import('./config')

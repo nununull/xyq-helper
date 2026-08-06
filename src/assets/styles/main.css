@@ -252,3 +252,30 @@ pre {
   background: var(--panel-strong);
   color: var(--text);
 }
+
+.category-button.active {
+  border-color: var(--success);
+  color: var(--bg);
+  background: var(--success);
+}
+
+.warning-text {
+  color: #f0b429;
+}
+
+.recognition-stage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.cache-actions {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.success-text {
+  color: var(--success);
+}

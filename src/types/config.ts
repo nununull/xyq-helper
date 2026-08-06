@@ -32,7 +32,7 @@ export const defaultAppConfig: AppConfig = {
     questionRegion: null,
     optionsRegion: null,
     devicePixelRatio: window.devicePixelRatio || 1,
-    captureFps: 1,
+    captureFps: 2,
   },
   ocr: {
     grayscale: true,
