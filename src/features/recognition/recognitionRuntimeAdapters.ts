@@ -18,8 +18,6 @@ interface OCRStorePort {
 export interface RecognitionRuntimeAdapterDependencies {
   /** 从当前屏幕共享中捕获一帧。 */
   captureFrame(): CaptureFrame | null
-  /** 识别指定捕获帧。 */
-  recognizeFrame(frame: CaptureFrame): Promise<OCRResult>
   captureStore: CaptureStorePort
   ocrStore: OCRStorePort
 }
@@ -35,19 +33,21 @@ export function createRecognitionRuntimeAdapters(
     return frame
   }
 
-  /** 执行 OCR，并同步识别中、成功或失败状态。 */
-  async function recognizeFrame(frame: CaptureFrame): Promise<OCRResult> {
+  /** 发布 OCR 已开始状态。 */
+  function publishOCRStarted(): void {
     dependencies.ocrStore.setStatus('recognizing')
-    try {
-      const result = await dependencies.recognizeFrame(frame)
-      dependencies.ocrStore.setResult(result)
-      dependencies.ocrStore.setStatus('ready')
-      return result
-    } catch (error) {
-      dependencies.ocrStore.setError(error instanceof Error ? error.message : 'OCR 识别失败')
-      throw error
-    }
   }
 
-  return { captureFrame, recognizeFrame }
+  /** 发布经过控制器代次校验的 OCR 成功结果。 */
+  function publishOCRResult(result: OCRResult): void {
+    dependencies.ocrStore.setResult(result)
+    dependencies.ocrStore.setStatus('ready')
+  }
+
+  /** 发布经过控制器代次校验的 OCR 失败消息。 */
+  function publishOCRError(error: string): void {
+    dependencies.ocrStore.setError(error)
+  }
+
+  return { captureFrame, publishOCRStarted, publishOCRResult, publishOCRError }
 }

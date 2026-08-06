@@ -59,6 +59,15 @@ interface MatcherStorePort {
   clear(): void
 }
 
+interface OCRPresentationPort {
+  /** 发布当前代次已经开始 OCR。 */
+  publishStarted(): void
+  /** 发布当前代次的 OCR 成功结果。 */
+  publishResult(result: OCRResult): void
+  /** 发布当前代次的 OCR 失败消息。 */
+  publishError(error: string): void
+}
+
 interface SolveContext {
   generation: number
   requestController: AbortController
@@ -85,6 +94,7 @@ export interface RecognitionControllerDependencies {
   getRequestTimeoutMs(): number
   /** 读取当前时钟，用于缓存统计与冷却判断。 */
   now(): number
+  ocrPresentation: OCRPresentationPort
   recognitionStore: RecognitionStorePort
   matcherStore: MatcherStorePort
 }
@@ -114,6 +124,7 @@ export function createRecognitionController(
     getCategoryId,
     getRequestTimeoutMs,
     now,
+    ocrPresentation,
     recognitionStore,
     matcherStore,
   } = dependencies
@@ -363,8 +374,17 @@ export function createRecognitionController(
     matcherStore.setError('')
     recognitionStore.setPhase('capturing', '正在处理新的题目画面')
     recognitionStore.setPhase('recognizing', '正在识别题目文字')
-    const recognized = await recognizeFrame(captured)
+    ocrPresentation.publishStarted()
+    let recognized: OCRResult
+    try {
+      recognized = await recognizeFrame(captured)
+    } catch (error) {
+      if (scheduledGeneration !== lifecycleGeneration) return
+      ocrPresentation.publishError(error instanceof Error ? error.message : 'OCR 识别失败')
+      throw error
+    }
     if (scheduledGeneration !== lifecycleGeneration) return
+    ocrPresentation.publishResult(recognized)
 
     recognitionStore.setPhase('stabilizing', '正在确认题目稳定性')
     const parsed = parseQuestion(recognized)
@@ -482,14 +502,13 @@ export function useRecognitionController(): RecognitionController {
   const { recognizeFrame } = useOCR()
   const runtimeAdapters = createRecognitionRuntimeAdapters({
     captureFrame: () => captureCurrentFrame(configStore.config.capture),
-    recognizeFrame,
     captureStore,
     ocrStore,
   })
 
   return createRecognitionController({
     captureFrame: runtimeAdapters.captureFrame,
-    recognizeFrame: runtimeAdapters.recognizeFrame,
+    recognizeFrame,
     query: queryRemoteQuestions,
     sleep: async (durationMs) => await new Promise((resolve) => setTimeout(resolve, durationMs)),
     readCache: getRemoteQuestionCache,
@@ -497,6 +516,11 @@ export function useRecognitionController(): RecognitionController {
     getCategoryId: () => configStore.config.remoteQuery.categoryId,
     getRequestTimeoutMs: () => configStore.config.remoteQuery.requestTimeoutMs,
     now: () => Date.now(),
+    ocrPresentation: {
+      publishStarted: runtimeAdapters.publishOCRStarted,
+      publishResult: runtimeAdapters.publishOCRResult,
+      publishError: runtimeAdapters.publishOCRError,
+    },
     recognitionStore: {
       /** 读取 Pinia 中最近完成的题目指纹。 */
       get lastCompletedFingerprint() {

@@ -72,6 +72,11 @@ interface Harness {
   query: ReturnType<typeof vi.fn<RecognitionControllerDependencies['query']>>
   readCache: ReturnType<typeof vi.fn<RecognitionControllerDependencies['readCache']>>
   writeCache: ReturnType<typeof vi.fn<RecognitionControllerDependencies['writeCache']>>
+  ocrPresentation: {
+    publishStarted: ReturnType<typeof vi.fn>
+    publishResult: ReturnType<typeof vi.fn>
+    publishError: ReturnType<typeof vi.fn>
+  }
   matcher: { result: MatchResult | null; error: string }
   recognition: {
     phase: RecognitionPhase
@@ -120,6 +125,11 @@ function createHarness(options: {
   const writeCache = vi.fn<RecognitionControllerDependencies['writeCache']>(
     options.writeCache ?? (async () => undefined),
   )
+  const ocrPresentation = {
+    publishStarted: vi.fn(),
+    publishResult: vi.fn(),
+    publishError: vi.fn(),
+  }
 
   const controller = createRecognitionController({
     captureFrame,
@@ -131,6 +141,7 @@ function createHarness(options: {
     getCategoryId: () => 'category',
     getRequestTimeoutMs: () => 1_500,
     now: options.now ?? (() => 1_000),
+    ocrPresentation,
     recognitionStore: {
       /** 读取测试状态中的最近完成指纹。 */
       get lastCompletedFingerprint() {
@@ -180,6 +191,7 @@ function createHarness(options: {
     query,
     readCache,
     writeCache,
+    ocrPresentation,
     matcher,
     recognition,
     /** 放行一个由测试控制的轮询等待。 */
@@ -203,6 +215,47 @@ async function advanceFrame(harness: Harness, expectedCount: number): Promise<vo
 }
 
 describe('串行连续识别控制器', () => {
+  it('stop 后迟到的 OCR 成功结果不会发布到展示 Store', async () => {
+    let resolveOCR!: (result: OCRResult) => void
+    const harness = createHarness({
+      frames: [frame('pending')],
+      recognizeFrame: async () => await new Promise<OCRResult>((resolve) => {
+        resolveOCR = resolve
+      }),
+    })
+
+    harness.controller.start()
+    await vi.waitFor(() => expect(harness.recognizeFrame).toHaveBeenCalledTimes(1))
+    harness.controller.stop()
+    resolveOCR(ocrResult())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(harness.ocrPresentation.publishStarted).toHaveBeenCalledTimes(1)
+    expect(harness.ocrPresentation.publishResult).not.toHaveBeenCalled()
+    expect(harness.ocrPresentation.publishError).not.toHaveBeenCalled()
+  })
+
+  it('reset 后迟到的 OCR 失败不会发布到展示 Store', async () => {
+    let rejectOCR!: (error: Error) => void
+    const harness = createHarness({
+      frames: [frame('pending')],
+      recognizeFrame: async () => await new Promise<OCRResult>((_resolve, reject) => {
+        rejectOCR = reject
+      }),
+    })
+
+    harness.controller.start()
+    await vi.waitFor(() => expect(harness.recognizeFrame).toHaveBeenCalledTimes(1))
+    harness.controller.resetForCategory()
+    rejectOCR(new Error('迟到 OCR 错误'))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    harness.controller.stop()
+
+    expect(harness.ocrPresentation.publishStarted).toHaveBeenCalledTimes(1)
+    expect(harness.ocrPresentation.publishResult).not.toHaveBeenCalled()
+    expect(harness.ocrPresentation.publishError).not.toHaveBeenCalled()
+  })
+
   it('相同帧指纹会跳过 OCR', async () => {
     const harness = createHarness({ frames: [frame('same'), frame('same')] })
 

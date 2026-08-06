@@ -10,49 +10,43 @@ const result = {
   durationMs: 10,
 } satisfies OCRResult
 
+/** 创建可观测调用的 OCR Store 端口。 */
+function createOCRStorePort() {
+  return {
+    setStatus: vi.fn(),
+    setResult: vi.fn(),
+    setError: vi.fn(),
+  }
+}
+
 describe('生产识别运行时适配器', () => {
-  it('捕获和 OCR 成功时同步预览及 OCR Store', async () => {
+  it('捕获成功时同步预览 Store', () => {
     const captureStore = { setFrame: vi.fn() }
-    const ocrStore = {
-      setStatus: vi.fn(),
-      setResult: vi.fn(),
-      setError: vi.fn(),
-    }
     const adapters = createRecognitionRuntimeAdapters({
       captureFrame: () => frame,
-      recognizeFrame: async () => result,
       captureStore,
-      ocrStore,
+      ocrStore: createOCRStorePort(),
     })
 
     expect(adapters.captureFrame()).toBe(frame)
-    await expect(adapters.recognizeFrame(frame)).resolves.toBe(result)
-
     expect(captureStore.setFrame).toHaveBeenCalledWith(frame)
-    expect(ocrStore.setStatus).toHaveBeenNthCalledWith(1, 'recognizing')
-    expect(ocrStore.setResult).toHaveBeenCalledWith(result)
-    expect(ocrStore.setStatus).toHaveBeenNthCalledWith(2, 'ready')
-    expect(ocrStore.setError).not.toHaveBeenCalled()
   })
 
-  it('OCR 失败时同步错误并继续向控制器抛出', async () => {
-    const error = new Error('OCR 失败')
-    const ocrStore = {
-      setStatus: vi.fn(),
-      setResult: vi.fn(),
-      setError: vi.fn(),
-    }
+  it('OCR 发布操作与引擎调用分离并同步对应 Store 状态', () => {
+    const ocrStore = createOCRStorePort()
     const adapters = createRecognitionRuntimeAdapters({
       captureFrame: () => null,
-      recognizeFrame: async () => { throw error },
       captureStore: { setFrame: vi.fn() },
       ocrStore,
     })
 
-    await expect(adapters.recognizeFrame(frame)).rejects.toBe(error)
+    adapters.publishOCRStarted()
+    adapters.publishOCRResult(result)
+    adapters.publishOCRError('OCR 失败')
 
-    expect(ocrStore.setStatus).toHaveBeenCalledWith('recognizing')
+    expect(ocrStore.setStatus).toHaveBeenNthCalledWith(1, 'recognizing')
+    expect(ocrStore.setResult).toHaveBeenCalledWith(result)
+    expect(ocrStore.setStatus).toHaveBeenNthCalledWith(2, 'ready')
     expect(ocrStore.setError).toHaveBeenCalledWith('OCR 失败')
-    expect(ocrStore.setResult).not.toHaveBeenCalled()
   })
 })
