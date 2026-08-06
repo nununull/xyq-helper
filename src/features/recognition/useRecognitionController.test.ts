@@ -28,19 +28,19 @@ function frame(frameHash: string): CaptureFrame {
 }
 
 /** 构造能够稳定解析为同一题目的 OCR 结果。 */
-function ocrResult(): OCRResult {
+function ocrResult(text = questionText): OCRResult {
   return {
-    question: { text: questionText, confidence: 0.96 },
+    question: { text, confidence: 0.96 },
     options: { text: 'A. 李白 B. 杜甫 C. 李贺 D. 白居易', confidence: 0.94 },
     durationMs: 10,
   }
 }
 
 /** 构造一个可命中且答案可映射到本次选项的远程结果。 */
-function successfulQuery(): RemoteQueryResult {
+function successfulQuery(question = questionText, answerText = '李贺'): RemoteQueryResult {
   return {
     kind: 'success',
-    candidates: [{ question: questionText, answerText: '李贺', source: '175dt' }],
+    candidates: [{ question, answerText, source: '175dt' }],
   }
 }
 
@@ -86,6 +86,7 @@ function createHarness(options: {
   frames?: CaptureFrame[]
   query?: RecognitionControllerDependencies['query']
   readCache?: RecognitionControllerDependencies['readCache']
+  recognizeFrame?: RecognitionControllerDependencies['recognizeFrame']
   now?: () => number
 } = {}): Harness {
   const frames = [...(options.frames ?? [])]
@@ -103,7 +104,7 @@ function createHarness(options: {
     () => frames.shift() ?? null,
   )
   const recognizeFrame = vi.fn<RecognitionControllerDependencies['recognizeFrame']>(
-    async () => ocrResult(),
+    options.recognizeFrame ?? (async () => ocrResult()),
   )
   const query = vi.fn<RecognitionControllerDependencies['query']>(
     options.query ?? (async () => successfulQuery()),
@@ -269,6 +270,42 @@ describe('串行连续识别控制器', () => {
     expect(harness.query).toHaveBeenCalledTimes(1)
   })
 
+  it('主查询和降级查询均为空时显示未查询到文案', async () => {
+    const harness = createHarness({
+      frames: [frame('one'), frame('two')],
+      query: async () => ({ kind: 'empty', candidates: [] }),
+    })
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await advanceFrame(harness, 2)
+    await vi.waitFor(() => expect(harness.recognition.phase).toBe('waitingRetry'))
+    harness.controller.stop()
+
+    expect(harness.matcher.error).toBe('当前题目未查询到')
+  })
+
+  it('候选结果歧义时显示多道相似题文案', async () => {
+    const harness = createHarness({
+      frames: [frame('one'), frame('two')],
+      query: async () => ({
+        kind: 'success',
+        candidates: [
+          { question: questionText, answerText: '李贺', source: '175dt' },
+          { question: questionText, answerText: '李贺', source: '175dt' },
+        ],
+      }),
+    })
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await advanceFrame(harness, 2)
+    await vi.waitFor(() => expect(harness.recognition.phase).toBe('waitingRetry'))
+    harness.controller.stop()
+
+    expect(harness.matcher.error).toBe('找到多道相似题')
+  })
+
   it('已完成的题目指纹不会再次查询', async () => {
     const harness = createHarness({ frames: [frame('one'), frame('two'), frame('three')] })
 
@@ -285,7 +322,7 @@ describe('串行连续识别控制器', () => {
   it('retry 会绕过当前题目的失败冷却并立即重试', async () => {
     let now = 1_000
     const harness = createHarness({
-      frames: [frame('one'), frame('two'), frame('three'), frame('four')],
+      frames: [frame('one'), frame('two'), frame('three'), frame('four'), frame('five')],
       now: () => now,
       query: vi.fn()
         .mockResolvedValueOnce({ kind: 'timeout', message: '远程题库响应超时' })
@@ -302,6 +339,7 @@ describe('串行连续识别控制器', () => {
     expect(harness.query).toHaveBeenCalledTimes(1)
 
     await harness.controller.retry()
+    await advanceFrame(harness, 5)
     harness.controller.stop()
 
     expect(harness.query).toHaveBeenCalledTimes(2)
@@ -364,6 +402,94 @@ describe('串行连续识别控制器', () => {
     expect(harness.matcher.result).toBeNull()
     expect(harness.recognition.lastCompletedFingerprint).toBeNull()
     expect(harness.recognition.running).toBe(false)
+  })
+
+  it('旧题请求期间会继续识别，并由两帧稳定的新题中止旧请求', async () => {
+    const newQuestion = '被称为“诗圣”的唐代诗人是谁？'
+    let resolveOldQuery!: (result: RemoteQueryResult) => void
+    let oldSignal: AbortSignal | undefined
+    const harness = createHarness({
+      frames: [frame('old-one'), frame('old-two'), frame('new-one'), frame('new-two')],
+      recognizeFrame: async (captured) => ocrResult(
+        captured.frameHash.startsWith('new') ? newQuestion : questionText,
+      ),
+      query: vi.fn()
+        .mockImplementationOnce(async (_categoryId, _queryText, options) => {
+          oldSignal = options.signal
+          return await new Promise<RemoteQueryResult>((resolve) => {
+            resolveOldQuery = resolve
+          })
+        })
+        .mockResolvedValueOnce(successfulQuery(newQuestion, '杜甫')),
+    })
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await advanceFrame(harness, 2)
+    await vi.waitFor(() => expect(harness.query).toHaveBeenCalledTimes(1))
+    await advanceFrame(harness, 3)
+    expect(harness.query).toHaveBeenCalledTimes(1)
+    await advanceFrame(harness, 4)
+    await vi.waitFor(() => expect(harness.query).toHaveBeenCalledTimes(2))
+
+    resolveOldQuery(successfulQuery())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(oldSignal?.aborted).toBe(true)
+    expect(harness.matcher.result).toMatchObject({ answerText: '杜甫', matchedQuestion: newQuestion })
+    expect(harness.matcher.result?.matchedQuestion).not.toBe(questionText)
+    harness.controller.stop()
+  })
+
+  it('retry 会优先中止待决请求，使旧失败无法阻止新查询', async () => {
+    let resolveOldQuery!: (result: RemoteQueryResult) => void
+    let oldSignal: AbortSignal | undefined
+    const harness = createHarness({
+      frames: [frame('old-one'), frame('old-two'), frame('retry-one'), frame('retry-two')],
+      query: vi.fn()
+        .mockImplementationOnce(async (_categoryId, _queryText, options) => {
+          oldSignal = options.signal
+          return await new Promise<RemoteQueryResult>((resolve) => {
+            resolveOldQuery = resolve
+          })
+        })
+        .mockResolvedValueOnce(successfulQuery()),
+    })
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await advanceFrame(harness, 2)
+    await vi.waitFor(() => expect(harness.query).toHaveBeenCalledTimes(1))
+
+    await harness.controller.retry()
+    expect(oldSignal?.aborted).toBe(true)
+    expect(harness.query).toHaveBeenCalledTimes(1)
+    resolveOldQuery({ kind: 'timeout', message: '远程题库响应超时' })
+    await advanceFrame(harness, 4)
+    await vi.waitFor(() => expect(harness.query).toHaveBeenCalledTimes(2))
+    harness.controller.stop()
+
+    expect(harness.matcher.result?.resultSource).toBe('remote')
+    expect(harness.matcher.error).toBe('')
+  })
+
+  it('stop 后重新启动时首帧仍需重新进入稳定流程', async () => {
+    const harness = createHarness({ frames: [frame('one'), frame('two')] })
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    harness.controller.stop()
+    harness.releaseNextSleep()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 2)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    harness.controller.stop()
+
+    expect(harness.recognizeFrame).toHaveBeenCalledTimes(2)
+    expect(harness.query).not.toHaveBeenCalled()
   })
 
   it('停止后的控制器可以重新启动新的轮询循环', async () => {

@@ -54,3 +54,18 @@ export const defaultAppConfig: AppConfig = {
     fontSize: 'large',
   },
 }
+
+type PartialAppConfig = {
+  [Key in keyof AppConfig]?: Partial<AppConfig[Key]>
+}
+
+/** 将持久化配置与当前默认值按分组深层合并，兼容旧版本缺失字段。 */
+export function mergeAppConfig(config: PartialAppConfig | null | undefined): AppConfig {
+  return {
+    capture: { ...defaultAppConfig.capture, ...config?.capture },
+    ocr: { ...defaultAppConfig.ocr, ...config?.ocr },
+    matcher: { ...defaultAppConfig.matcher, ...config?.matcher },
+    remoteQuery: { ...defaultAppConfig.remoteQuery, ...config?.remoteQuery },
+    overlay: { ...defaultAppConfig.overlay, ...config?.overlay },
+  }
+}
