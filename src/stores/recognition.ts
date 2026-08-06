@@ -9,6 +9,7 @@ const initialState = () => ({
   message: '',
   running: false,
   lastCompletedFingerprint: null as string | null,
+  lastCompletedQuestion: null as string | null,
   resultSource: null as ResultSource,
   durationMs: null as number | null,
 })
@@ -31,6 +32,10 @@ export const useRecognitionStore = defineStore('recognition', {
     /** 记录最近一次完成识别的题目指纹。 */
     setLastCompletedFingerprint(fingerprint: string | null) {
       this.lastCompletedFingerprint = fingerprint
+    },
+    /** 记录最近一次完成识别的标准化题干。 */
+    setLastCompletedQuestion(question: string | null) {
+      this.lastCompletedQuestion = question
     },
     /** 将识别状态恢复为初始值。 */
     reset() {

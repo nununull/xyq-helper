@@ -37,7 +37,7 @@ export async function queryRemoteQuestions(
 
     const payload: unknown = await response.json()
     if (!isRemotePayload(payload)) {
-      return { kind: 'malformedResponse', message: '远程接口响应格式异常' }
+      return { kind: 'malformedResponse', message: '远程接口格式发生变化' }
     }
 
     const candidates = payload.hits
@@ -55,6 +55,9 @@ export async function queryRemoteQuestions(
     }
     if (error instanceof TypeError) {
       return { kind: 'corsBlocked', message: '可能是 CORS 或网络错误' }
+    }
+    if (error instanceof SyntaxError) {
+      return { kind: 'malformedResponse', message: '远程接口格式发生变化' }
     }
     return { kind: 'remoteError', message: error instanceof Error ? error.message : '远程请求失败' }
   } finally {

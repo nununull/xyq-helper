@@ -15,6 +15,7 @@ import type { OCRResult } from '../../types/ocr'
 import type { ParsedQuestion } from '../../types/question'
 import type {
   RecognitionPhase,
+  RemoteAmbiguousCandidate,
   RemoteQueryOptions,
   RemoteQueryResult,
   RemoteQuestionCache,
@@ -23,7 +24,9 @@ import { parseQuestion } from '../../utils/parseQuestion'
 import {
   cleanRemoteQueryText,
   createQuestionFingerprint,
+  findSimilarQuestionEntry,
   selectFallbackKeyword,
+  type SimilarQuestionEntry,
 } from '../remote-query/queryText'
 import {
   inferRemoteAnswer,
@@ -40,12 +43,15 @@ const CATEGORY_RATE_LIMIT_COOLDOWN_MS = 60_000
 
 interface RecognitionStorePort {
   readonly lastCompletedFingerprint: string | null
+  readonly lastCompletedQuestion: string | null
   /** 同步识别阶段及其用户提示。 */
   setPhase(phase: RecognitionPhase, message: string): void
   /** 同步连续识别是否运行。 */
   setRunning(running: boolean): void
   /** 记录最近完成的题目指纹。 */
   setLastCompletedFingerprint(fingerprint: string | null): void
+  /** 记录最近完成的标准化题干。 */
+  setLastCompletedQuestion(question: string | null): void
   /** 记录本次答案来源与求解耗时。 */
   setOutcome(resultSource: 'cache' | 'remote', durationMs: number): void
 }
@@ -53,6 +59,8 @@ interface RecognitionStorePort {
 interface MatcherStorePort {
   /** 发布或清空当前匹配结果。 */
   setResult(result: MatchResult | null): void
+  /** 发布或清空远程歧义候选。 */
+  setRemoteCandidates(candidates: RemoteAmbiguousCandidate[]): void
   /** 发布或清空当前匹配错误。 */
   setError(error: string): void
   /** 清空当前匹配上下文。 */
@@ -73,6 +81,7 @@ interface SolveContext {
   requestController: AbortController
   fingerprint: string
   categoryId: string
+  normalizedQuestion: string
 }
 
 export interface RecognitionControllerDependencies {
@@ -138,10 +147,11 @@ export function createRecognitionController(
   let lifecycleGeneration = 0
   let activeSolveGeneration = 0
   let activeRequestController: AbortController | null = null
-  let lastProcessedFrameHash: string | null = null
-  let lastStableFingerprint: string | null = null
+  let lastStableFrameHash: string | null = null
+  let lastStableQuestion: string | null = null
   let activeFingerprint: string | null = null
   let activeSolveContext: SolveContext | null = null
+  let lastCompletedCache: SimilarQuestionEntry<RemoteQuestionCache> | null = null
   const solveContexts = new WeakMap<ParsedQuestion, SolveContext>()
 
   /** 判断异步结果是否仍属于当前识别代次。 */
@@ -162,9 +172,26 @@ export function createRecognitionController(
   /** 清除帧稳定器和当前题目上下文，下一帧必须重新稳定。 */
   function clearCurrentQuestionContext(): void {
     stabilizer.reset()
-    lastProcessedFrameHash = null
-    lastStableFingerprint = null
+    lastStableFrameHash = null
+    lastStableQuestion = null
     activeFingerprint = null
+  }
+
+  /** 清理过期记录后，查找与当前题干足够相似的有效失败冷却。 */
+  function findActiveFailureCooldown(
+    normalizedQuestion: string,
+  ): SimilarQuestionEntry<number> | null {
+    const currentTime = now()
+    for (const [question, expiresAt] of questionFailureCooldowns) {
+      if (expiresAt <= currentTime) questionFailureCooldowns.delete(question)
+    }
+    return findSimilarQuestionEntry(
+      normalizedQuestion,
+      Array.from(questionFailureCooldowns, ([question, value]) => ({
+        normalizedQuestion: question,
+        value,
+      })),
+    )
   }
 
   /** 以固定文案发布等待重试状态，并登记对应冷却时间。 */
@@ -173,6 +200,7 @@ export function createRecognitionController(
   ): void {
     const context = activeSolveContext
     if (!context || !canPublish(context)) return
+    matcherStore.setRemoteCandidates([])
 
     const messages = {
       corsBlocked: '可能是 CORS 或网络错误',
@@ -187,7 +215,10 @@ export function createRecognitionController(
     if (result.kind === 'rateLimited') {
       categoryRateLimitCooldowns.set(context.categoryId, now() + CATEGORY_RATE_LIMIT_COOLDOWN_MS)
     } else {
-      questionFailureCooldowns.set(context.fingerprint, now() + QUESTION_FAILURE_COOLDOWN_MS)
+      questionFailureCooldowns.set(
+        context.normalizedQuestion,
+        now() + QUESTION_FAILURE_COOLDOWN_MS,
+      )
     }
     matcherStore.setError(message)
     recognitionStore.setPhase('waitingRetry', message)
@@ -224,6 +255,11 @@ export function createRecognitionController(
     })
     recognitionStore.setOutcome('cache', durationMs)
     recognitionStore.setLastCompletedFingerprint(cached.questionFingerprint)
+    recognitionStore.setLastCompletedQuestion(parsed.normalizedQuestion)
+    lastCompletedCache = {
+      normalizedQuestion: parsed.normalizedQuestion,
+      value: updated,
+    }
     recognitionStore.setPhase('showingAnswer', '已从本地缓存找到答案')
   }
 
@@ -238,15 +274,27 @@ export function createRecognitionController(
     const context = solveContexts.get(parsed)
     if (!context || !canPublish(context)) return
     if (decision.kind === 'rejected' || !decision.best) {
-      questionFailureCooldowns.set(fingerprint, now() + QUESTION_FAILURE_COOLDOWN_MS)
+      matcherStore.setRemoteCandidates([])
+      questionFailureCooldowns.set(
+        parsed.normalizedQuestion,
+        now() + QUESTION_FAILURE_COOLDOWN_MS,
+      )
       const message = '当前题目未查询到'
       matcherStore.setError(message)
       recognitionStore.setPhase('waitingRetry', message)
       return
     }
     if (decision.kind === 'ambiguous') {
-      questionFailureCooldowns.set(fingerprint, now() + QUESTION_FAILURE_COOLDOWN_MS)
+      questionFailureCooldowns.set(
+        parsed.normalizedQuestion,
+        now() + QUESTION_FAILURE_COOLDOWN_MS,
+      )
       const message = '找到多道相似题'
+      matcherStore.setRemoteCandidates(decision.candidates.slice(0, 2).map((candidate) => ({
+        question: candidate.question,
+        answerText: candidate.answerText,
+        confidence: candidate.confidence,
+      })))
       matcherStore.setError(message)
       recognitionStore.setPhase('waitingRetry', message)
       return
@@ -286,6 +334,11 @@ export function createRecognitionController(
     })
     recognitionStore.setOutcome('remote', durationMs)
     recognitionStore.setLastCompletedFingerprint(fingerprint)
+    recognitionStore.setLastCompletedQuestion(parsed.normalizedQuestion)
+    lastCompletedCache = {
+      normalizedQuestion: parsed.normalizedQuestion,
+      value: cacheRecord,
+    }
     recognitionStore.setPhase('showingAnswer', warning ?? '已找到远程答案')
   }
 
@@ -303,6 +356,7 @@ export function createRecognitionController(
       requestController,
       fingerprint,
       categoryId,
+      normalizedQuestion: parsed.normalizedQuestion,
     }
     activeRequestController = requestController
     activeSolveContext = context
@@ -315,6 +369,14 @@ export function createRecognitionController(
       if (!canPublish(context)) return
       if (cached) {
         await publishCachedResult(cached, parsed, startedAt)
+        return
+      }
+      const completed = findSimilarQuestionEntry(
+        parsed.normalizedQuestion,
+        lastCompletedCache ? [lastCompletedCache] : [],
+      )
+      if (completed) {
+        await publishCachedResult(completed.value, parsed, startedAt)
         return
       }
       if (fingerprint === recognitionStore.lastCompletedFingerprint) return
@@ -349,7 +411,11 @@ export function createRecognitionController(
       await publishDecision(decision, categoryId, fingerprint, parsed, startedAt)
     } catch (error) {
       if (canPublish(context)) {
-        questionFailureCooldowns.set(fingerprint, now() + QUESTION_FAILURE_COOLDOWN_MS)
+        matcherStore.setRemoteCandidates([])
+        questionFailureCooldowns.set(
+          parsed.normalizedQuestion,
+          now() + QUESTION_FAILURE_COOLDOWN_MS,
+        )
         const message = error instanceof Error ? error.message : '连续识别发生异常'
         matcherStore.setError(message)
         recognitionStore.setPhase('waitingRetry', message)
@@ -368,8 +434,7 @@ export function createRecognitionController(
     if (scheduledGeneration !== lifecycleGeneration) return
     const captured = await captureFrame()
     if (scheduledGeneration !== lifecycleGeneration || !captured) return
-    if (captured.frameHash === lastProcessedFrameHash) return
-    lastProcessedFrameHash = captured.frameHash
+    if (captured.frameHash === lastStableFrameHash) return
 
     matcherStore.setError('')
     recognitionStore.setPhase('capturing', '正在处理新的题目画面')
@@ -388,16 +453,25 @@ export function createRecognitionController(
 
     recognitionStore.setPhase('stabilizing', '正在确认题目稳定性')
     const parsed = parseQuestion(recognized)
-    const stable = stabilizer.push(parsed)
-    if (!stable) return
+    const stability = stabilizer.push(parsed)
+    if (stability.kind !== 'stable') {
+      lastStableFrameHash = null
+      invalidateActiveSolve()
+      activeFingerprint = null
+      matcherStore.clear()
+      return
+    }
+    const stable = stability.question
+    lastStableFrameHash = captured.frameHash
 
     const fingerprint = createQuestionFingerprint(stable.normalizedQuestion)
-    lastStableFingerprint = fingerprint
+    lastStableQuestion = stable.normalizedQuestion
     if (fingerprint !== activeFingerprint) {
       invalidateActiveSolve()
       activeFingerprint = fingerprint
     }
-    if ((questionFailureCooldowns.get(fingerprint) ?? 0) > now()) {
+    const activeCooldown = findActiveFailureCooldown(stable.normalizedQuestion)
+    if (activeCooldown) {
       recognitionStore.setPhase('waitingRetry', '当前题目暂在失败冷却中')
       return
     }
@@ -464,15 +538,19 @@ export function createRecognitionController(
       invalidateActiveSolve()
       clearCurrentQuestionContext()
       recognitionStore.setRunning(false)
+      matcherStore.setRemoteCandidates([])
       recognitionStore.setPhase('paused', '连续识别已暂停')
     },
 
     /** 清除当前题目失败冷却并立即串行处理一帧。 */
     async retry(): Promise<void> {
-      const retryFingerprint = lastStableFingerprint ?? activeFingerprint
+      const retryQuestion = lastStableQuestion
       lifecycleGeneration += 1
       invalidateActiveSolve()
-      if (retryFingerprint) questionFailureCooldowns.delete(retryFingerprint)
+      if (retryQuestion) {
+        const cooldown = findActiveFailureCooldown(retryQuestion)
+        if (cooldown) questionFailureCooldowns.delete(cooldown.normalizedQuestion)
+      }
       clearCurrentQuestionContext()
       matcherStore.setError('')
       await enqueueFrame()
@@ -485,6 +563,8 @@ export function createRecognitionController(
       questionFailureCooldowns.clear()
       clearCurrentQuestionContext()
       recognitionStore.setLastCompletedFingerprint(null)
+      recognitionStore.setLastCompletedQuestion(null)
+      lastCompletedCache = null
       recognitionStore.setPhase(running ? 'capturing' : 'idle', running ? '等待识别新分类题目' : '')
       matcherStore.clear()
     },
@@ -526,6 +606,10 @@ export function useRecognitionController(): RecognitionController {
       get lastCompletedFingerprint() {
         return recognitionStore.lastCompletedFingerprint
       },
+      /** 读取 Pinia 中最近完成的标准化题干。 */
+      get lastCompletedQuestion() {
+        return recognitionStore.lastCompletedQuestion
+      },
       /** 同步流程阶段和用户提示。 */
       setPhase(phase, message) {
         recognitionStore.setPhase(phase)
@@ -538,6 +622,10 @@ export function useRecognitionController(): RecognitionController {
       /** 同步最近完成的题目指纹。 */
       setLastCompletedFingerprint(fingerprint) {
         recognitionStore.setLastCompletedFingerprint(fingerprint)
+      },
+      /** 同步最近完成的标准化题干。 */
+      setLastCompletedQuestion(question) {
+        recognitionStore.setLastCompletedQuestion(question)
       },
       /** 同步结果来源和本次求解耗时。 */
       setOutcome(resultSource, durationMs) {

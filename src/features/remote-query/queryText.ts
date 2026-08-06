@@ -1,6 +1,38 @@
-import { normalizeQuestionText } from '../../utils/normalizeText'
+import { diceSimilarity, normalizeQuestionText } from '../../utils/normalizeText'
 
-const genericWords = new Set(['以下', '哪个', '什么', '正确', '错误', '属于', '说法', '的是'])
+const genericWords = new Set([
+  '以下', '哪个', '什么', '正确', '错误', '属于', '说法', '的是', '谁',
+  '哪些', '如何', '为什么', '是否', '题目', '答案', '城市', '工具',
+])
+const questionScaffolds = [
+  '被称为', '为什么', '的是', '以下', '哪个', '哪些', '什么', '正确',
+  '错误', '属于', '说法', '称为', '如何', '是否', '中', '的', '是', '吗',
+]
+
+export interface SimilarQuestionEntry<T> {
+  normalizedQuestion: string
+  value: T
+}
+
+/** 在题目记录中查找相似度严格大于阈值的最佳项。 */
+export function findSimilarQuestionEntry<T>(
+  normalizedQuestion: string,
+  entries: Iterable<SimilarQuestionEntry<T>>,
+  threshold = 0.95,
+): SimilarQuestionEntry<T> | null {
+  let best: SimilarQuestionEntry<T> | null = null
+  let bestSimilarity = threshold
+
+  for (const entry of entries) {
+    const similarity = diceSimilarity(normalizedQuestion, entry.normalizedQuestion)
+    if (similarity > bestSimilarity) {
+      best = entry
+      bestSimilarity = similarity
+    }
+  }
+
+  return best
+}
 
 /** 清理 OCR 题干，使其适合作为远程接口的主查询文本。 */
 export function cleanRemoteQueryText(text: string): string {
@@ -24,17 +56,90 @@ export function createQuestionFingerprint(text: string): string {
   return (hash >>> 0).toString(36)
 }
 
-/** 从题干中选择唯一的高信息量降级关键词。 */
+/** 从题干中按明确优先级选择唯一的高信息量降级关键词。 */
 export function selectFallbackKeyword(text: string): string | null {
-  const quoted = text.match(/[“”"《》]([^“”"《》]{2,8})[“”"《》]/)?.[1]
-  if (quoted && !genericWords.has(quoted)) {
-    return quoted
+  const quoted = extractQuotedKeyword(text)
+  if (quoted) return quoted
+
+  const normalized = normalizeQuestionText(text)
+  const entity = extractEntityKeyword(normalized)
+  if (entity) return entity
+
+  const quantity = normalized.match(/[0-9零〇一二三四五六七八九十百千万两]+(?:个|位|名|年|次|种|只|条|本|部|座|枚|件|岁|天|月|日)/)?.[0]
+  if (quantity && isUsefulKeyword(quantity)) return quantity
+
+  return selectHighInformationWindow(normalized)
+}
+
+/** 按成对引号与书名号的优先级提取专有内容。 */
+function extractQuotedKeyword(text: string): string | null {
+  const quotedPatterns = [
+    /“([^”]{2,8})”/,
+    /"([^"]{2,8})"/,
+    /《([^》]{2,8})》/,
+    /「([^」]{2,8})」/,
+    /『([^』]{2,8})』/,
+  ]
+  for (const pattern of quotedPatterns) {
+    const candidate = pattern.exec(text)?.[1]?.trim()
+    if (candidate && isUsefulKeyword(candidate)) return candidate
+  }
+  return null
+}
+
+/** 从无引号题干中提取人名、朝代或专名词组。 */
+function extractEntityKeyword(normalized: string): string | null {
+  const roleName = normalized.match(
+    /(?:诗人|词人|作家|文学家|书法家|画家|名将|科学家|发明家)([㐀-鿿]{2,4})(?=被|为|是|曾|创|撰|发|的|$)/,
+  )?.[1]
+  if (roleName && isUsefulKeyword(roleName)) return roleName
+
+  const contextualPerson = normalized.match(
+    /(?:朝|代|时期)([㐀-鿿]{2,4})(?=所著|所作|创作|提出|被|曾)/,
+  )?.[1]
+  if (contextualPerson && isUsefulKeyword(contextualPerson)) return contextualPerson
+
+  const namedTopic = normalized.match(
+    /([㐀-鿿]{1,2}(?:发明|名著|战争|运动|制度|学说|建筑|节气|生肖))/,
+  )?.[1]
+  if (namedTopic && isUsefulKeyword(namedTopic)) return namedTopic
+
+  const dynasty = normalized.match(/(?:西周|东周|西汉|东汉|西晋|东晋|北宋|南宋|[夏商周秦汉晋隋唐宋元明清])(?:朝|代)/)?.[0]
+  return dynasty && isUsefulKeyword(dynasty) ? dynasty : null
+}
+
+/** 从长片段中选择唯一的 2～4 字高信息窗口。 */
+function selectHighInformationWindow(normalized: string): string | null {
+  const separator = new RegExp(questionScaffolds.join('|'), 'g')
+  const fragments = normalized
+    .replace(separator, ' ')
+    .split(/\s+/)
+    .map((part) => part.replace(/[^㐀-鿿0-9]/g, ''))
+    .filter((part) => part.length >= 2)
+  const candidates: Array<{ keyword: string; score: number; order: number }> = []
+  let order = 0
+
+  for (const fragment of fragments) {
+    const maximumLength = Math.min(4, fragment.length)
+    for (let length = maximumLength; length >= 2; length -= 1) {
+      for (let index = 0; index <= fragment.length - length; index += 1) {
+        const keyword = fragment.slice(index, index + length)
+        if (!isUsefulKeyword(keyword)) continue
+        const score = length * 10
+          + (/[鬼诗朝代史名书国学战发明宗]/.test(keyword) ? 4 : 0)
+        candidates.push({ keyword, score, order: order++ })
+      }
+    }
   }
 
-  const candidates = normalizeQuestionText(text)
-    .split(/(?:以下|哪个|什么|正确|错误|属于|说法|的是|中|被称为)/)
-    .map((part) => part.replace(/[^\u3400-\u9fff0-9]/g, ''))
-    .filter((part) => part.length >= 2 && part.length <= 4 && !genericWords.has(part))
+  candidates.sort((left, right) => right.score - left.score || left.order - right.order)
+  return candidates[0]?.keyword ?? null
+}
 
-  return candidates.sort((left, right) => right.length - left.length)[0] ?? null
+/** 过滤通用问句词和信息量不足的候选。 */
+function isUsefulKeyword(keyword: string): boolean {
+  return keyword.length >= 2
+    && keyword.length <= 8
+    && !genericWords.has(keyword)
+    && !questionScaffolds.includes(keyword)
 }

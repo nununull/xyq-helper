@@ -9,7 +9,7 @@ import { useOCR } from '../composables/useOCR'
 import { useScreenCapture } from '../composables/useScreenCapture'
 import { activityCategories } from '../data/activityCategories'
 import { useRecognitionController } from '../features/recognition/useRecognitionController'
-import { useCaptureStore } from '../stores/capture'
+import { getCaptureErrorMessage, useCaptureStore } from '../stores/capture'
 import { useConfigStore } from '../stores/config'
 import { useMatcherStore } from '../stores/matcher'
 import { useOCRStore } from '../stores/ocr'
@@ -47,7 +47,7 @@ async function startCapture(): Promise<void> {
   } catch (error) {
     controller.stop()
     screenCapture.stopCapture()
-    captureStore.setError(error instanceof Error ? error.message : '屏幕捕获授权失败')
+    captureStore.setError(getCaptureErrorMessage(error))
   }
 }
 
@@ -162,7 +162,20 @@ onBeforeUnmount(() => {
           <p v-if="matcherStore.result?.resultSource">来源：{{ matcherStore.result.resultSource }}</p>
           <p v-if="matcherStore.result?.durationMs">总耗时：{{ matcherStore.result.durationMs }}ms</p>
           <p v-if="matcherStore.result?.warning" class="warning-text">{{ matcherStore.result.warning }}</p>
+          <p v-if="captureStore.error" class="error-text">{{ captureStore.error }}</p>
           <p v-if="matcherStore.error" class="error-text">{{ matcherStore.error }}</p>
+        </section>
+        <section v-if="matcherStore.remoteCandidates.length" class="panel">
+          <h2>候选题目</h2>
+          <article
+            v-for="(candidate, index) in matcherStore.remoteCandidates"
+            :key="`${candidate.question}-${index}`"
+          >
+            <strong>候选 {{ index + 1 }}</strong>
+            <p>{{ candidate.question }}</p>
+            <p>答案文本：{{ candidate.answerText }}</p>
+            <p>置信度：{{ Math.round(candidate.confidence * 100) }}%</p>
+          </article>
         </section>
         <SettingsPanel />
         <UnknownQuestions />

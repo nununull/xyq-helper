@@ -54,6 +54,18 @@ describe('175DT 远程客户端', () => {
     })
   })
 
+  it('把真实非 JSON 的 200 响应归类为 malformedResponse', async () => {
+    const fetcher = vi.fn(async () => new Response('<html>upstream changed</html>', {
+      status: 200,
+      headers: { 'Content-Type': 'text/html' },
+    }))
+
+    await expect(queryRemoteQuestions('44', '诗鬼', { fetcher })).resolves.toEqual({
+      kind: 'malformedResponse',
+      message: '远程接口格式发生变化',
+    })
+  })
+
   it('把网络 TypeError 归类为可能的跨域错误', async () => {
     const fetcher = vi.fn(async () => { throw new TypeError('Failed to fetch') })
     const result = await queryRemoteQuestions('44', '诗鬼', { fetcher })

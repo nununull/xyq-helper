@@ -36,6 +36,12 @@ export interface RankedRemoteCandidate extends RemoteQuestionCandidate {
   confidence: number
 }
 
+export interface RemoteAmbiguousCandidate {
+  question: string
+  answerText: string
+  confidence: number
+}
+
 export interface RemoteQuestionCache {
   id: string
   categoryId: string
