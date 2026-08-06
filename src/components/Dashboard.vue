@@ -14,6 +14,7 @@ import { useConfigStore } from '../stores/config'
 import { useMatcherStore } from '../stores/matcher'
 import { useOCRStore } from '../stores/ocr'
 import { useRecognitionStore } from '../stores/recognition'
+import { parseQuestion } from '../utils/parseQuestion'
 
 const captureStore = useCaptureStore()
 const configStore = useConfigStore()
@@ -25,14 +26,22 @@ const ocr = useOCR()
 const controller = useRecognitionController()
 
 const selectedCategoryId = computed(() => configStore.config.remoteQuery.categoryId)
+const parsedQuestion = computed(() => (
+  ocrStore.lastResult ? parseQuestion(ocrStore.lastResult) : null
+))
 
 /** 获取屏幕共享后启动连续识别。 */
 async function startCapture(): Promise<void> {
-  if (!selectedCategoryId.value) return
+  if (
+    !selectedCategoryId.value
+    || captureStore.status === 'requesting'
+    || captureStore.status === 'active'
+  ) return
 
   try {
     captureStore.setStatus('requesting')
-    await screenCapture.startCapture()
+    const ownsCapture = await screenCapture.startCapture()
+    if (!ownsCapture) return
     captureStore.setStatus('active')
     controller.start()
   } catch (error) {
@@ -54,6 +63,8 @@ async function selectCategory(categoryId: string): Promise<void> {
   if (categoryId === selectedCategoryId.value) return
   controller.stop()
   controller.resetForCategory()
+  screenCapture.stopCapture()
+  captureStore.setStatus('paused')
   await configStore.selectActivityCategory(categoryId)
 }
 
@@ -65,7 +76,10 @@ function handleCaptureEnded(): void {
 
 /** 页面隐藏时立即暂停识别并中止在途请求。 */
 function handleVisibilityChange(): void {
-  if (document.hidden) controller.stop()
+  if (!document.hidden) return
+  controller.stop()
+  screenCapture.stopCapture()
+  captureStore.setStatus('paused')
 }
 
 const unsubscribeCaptureEnded = screenCapture.onCaptureEnded(handleCaptureEnded)
@@ -89,7 +103,13 @@ onBeforeUnmount(() => {
       </div>
       <div class="topbar-actions">
         <span class="status-pill">{{ captureStore.status }}</span>
-        <button type="button" :disabled="!selectedCategoryId" @click="startCapture">开始连续识别</button>
+        <button
+          type="button"
+          :disabled="!selectedCategoryId || captureStore.status === 'requesting' || captureStore.status === 'active'"
+          @click="startCapture"
+        >
+          开始连续识别
+        </button>
         <button type="button" :disabled="!recognitionStore.running" @click="stopCapture">停止</button>
         <button type="button" :disabled="captureStore.status !== 'active'" @click="controller.retry">
           手动重试
@@ -114,7 +134,7 @@ onBeforeUnmount(() => {
 
       <main class="workspace">
         <CapturePreview :frame="captureStore.lastFrame" />
-        <OCRResult :result="ocrStore.lastResult" :parsed="null" />
+        <OCRResult :result="ocrStore.lastResult" :parsed="parsedQuestion" />
         <section class="panel">
           <h2>匹配结果</h2>
           <p v-if="!matcherStore.result" class="muted">暂无可靠答案。</p>

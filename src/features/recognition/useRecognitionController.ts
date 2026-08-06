@@ -4,8 +4,10 @@ import {
   putRemoteQuestionCache,
 } from '../../composables/useLocalStorageDB'
 import { useScreenCapture } from '../../composables/useScreenCapture'
+import { useCaptureStore } from '../../stores/capture'
 import { useConfigStore } from '../../stores/config'
 import { useMatcherStore } from '../../stores/matcher'
+import { useOCRStore } from '../../stores/ocr'
 import { useRecognitionStore } from '../../stores/recognition'
 import type { CaptureFrame } from '../../types/capture'
 import type { MatchResult } from '../../types/match'
@@ -30,6 +32,7 @@ import {
 } from '../remote-query/remoteCandidateMatcher'
 import { queryRemoteQuestions } from '../remote-query/remoteQuestionClient'
 import { createQuestionStabilizer } from './questionStabilizer'
+import { createRecognitionRuntimeAdapters } from './recognitionRuntimeAdapters'
 
 const POLL_INTERVAL_MS = 500
 const QUESTION_FAILURE_COOLDOWN_MS = 10_000
@@ -470,15 +473,23 @@ export function createRecognitionController(
 
 /** 使用屏幕捕获、OCR、远程查询、缓存与 Pinia Store 创建生产控制器。 */
 export function useRecognitionController(): RecognitionController {
+  const captureStore = useCaptureStore()
   const configStore = useConfigStore()
   const matcherStore = useMatcherStore()
+  const ocrStore = useOCRStore()
   const recognitionStore = useRecognitionStore()
   const { captureCurrentFrame } = useScreenCapture()
   const { recognizeFrame } = useOCR()
-
-  return createRecognitionController({
+  const runtimeAdapters = createRecognitionRuntimeAdapters({
     captureFrame: () => captureCurrentFrame(configStore.config.capture),
     recognizeFrame,
+    captureStore,
+    ocrStore,
+  })
+
+  return createRecognitionController({
+    captureFrame: runtimeAdapters.captureFrame,
+    recognizeFrame: runtimeAdapters.recognizeFrame,
     query: queryRemoteQuestions,
     sleep: async (durationMs) => await new Promise((resolve) => setTimeout(resolve, durationMs)),
     readCache: getRemoteQuestionCache,

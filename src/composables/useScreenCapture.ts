@@ -4,6 +4,8 @@ import { createFrameHash } from '../utils/frameHash'
 let mediaStream: MediaStream | null = null
 let videoElement: HTMLVideoElement | null = null
 let activeVideoTrack: MediaStreamTrack | null = null
+let activeTrackEndedHandler: (() => void) | null = null
+let captureGeneration = 0
 const captureEndedListeners = new Set<() => void>()
 
 /** 向全部订阅者广播当前屏幕捕获轨道已经结束。 */
@@ -11,30 +13,77 @@ function notifyCaptureEnded(): void {
   captureEndedListeners.forEach((listener) => listener())
 }
 
+/** 停止指定媒体流的全部轨道。 */
+function stopStream(stream: MediaStream): void {
+  stream.getTracks().forEach((track) => track.stop())
+}
+
+/** 释放当前捕获资源，并在停止轨道前解除 ended 监听。 */
+function releaseActiveCapture(): void {
+  activeVideoTrack?.removeEventListener('ended', activeTrackEndedHandler ?? notifyCaptureEnded)
+  if (mediaStream) stopStream(mediaStream)
+  mediaStream = null
+  videoElement = null
+  activeVideoTrack = null
+  activeTrackEndedHandler = null
+}
+
+/** 仅处理仍拥有当前捕获代次的轨道结束事件。 */
+function handleTrackEnded(generation: number, stream: MediaStream): void {
+  if (generation !== captureGeneration || mediaStream !== stream) return
+  captureGeneration += 1
+  releaseActiveCapture()
+  notifyCaptureEnded()
+}
+
+/** 提供具有代次所有权保护的屏幕捕获操作。 */
 export function useScreenCapture() {
   /** 请求屏幕共享并绑定本次视频轨道的结束事件。 */
-  async function startCapture(): Promise<void> {
-    stopCapture()
-    mediaStream = await navigator.mediaDevices.getDisplayMedia({
-      video: true,
-      audio: false,
-    })
-    activeVideoTrack = mediaStream.getVideoTracks()[0] ?? null
-    activeVideoTrack?.addEventListener('ended', notifyCaptureEnded)
+  async function startCapture(): Promise<boolean> {
+    const generation = ++captureGeneration
+    releaseActiveCapture()
+    let stream: MediaStream
+    try {
+      stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: false,
+      })
+    } catch (error) {
+      if (generation !== captureGeneration) return false
+      throw error
+    }
+    if (generation !== captureGeneration) {
+      stopStream(stream)
+      return false
+    }
 
-    videoElement = document.createElement('video')
-    videoElement.srcObject = mediaStream
-    videoElement.muted = true
-    await videoElement.play()
+    const video = document.createElement('video')
+    const videoTrack = stream.getVideoTracks()[0] ?? null
+    const endedHandler = () => handleTrackEnded(generation, stream)
+    videoTrack?.addEventListener('ended', endedHandler)
+    video.srcObject = stream
+    video.muted = true
+    mediaStream = stream
+    videoElement = video
+    activeVideoTrack = videoTrack
+    activeTrackEndedHandler = endedHandler
+
+    try {
+      await video.play()
+    } catch (error) {
+      if (generation !== captureGeneration || mediaStream !== stream) return false
+      captureGeneration += 1
+      releaseActiveCapture()
+      throw error
+    }
+
+    return generation === captureGeneration && mediaStream === stream
   }
 
   /** 幂等停止当前屏幕共享并释放媒体引用。 */
   function stopCapture(): void {
-    activeVideoTrack?.removeEventListener('ended', notifyCaptureEnded)
-    mediaStream?.getTracks().forEach((track) => track.stop())
-    mediaStream = null
-    videoElement = null
-    activeVideoTrack = null
+    captureGeneration += 1
+    releaseActiveCapture()
   }
 
   /** 订阅捕获轨道结束事件，并返回对应的取消订阅函数。 */
