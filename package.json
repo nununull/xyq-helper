@@ -10,7 +10,9 @@
     "merge:questions": "node scripts/merge-questions.mjs",
     "build:index": "node scripts/build-index.mjs",
     "build:db": "node scripts/build-db.mjs",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "vitest",
+    "test:run": "vitest run"
   },
   "dependencies": {
     "@vitejs/plugin-vue": "^5.2.4",
@@ -21,8 +23,10 @@
     "vue": "^3.5.18"
   },
   "devDependencies": {
+    "fake-indexeddb": "^6.2.5",
     "sql.js": "^1.14.1",
     "typescript": "^5.8.3",
+    "vitest": "^2.1.9",
     "vue-tsc": "^2.2.12"
   }
 }
