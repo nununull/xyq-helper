@@ -2,7 +2,7 @@
 
 ## 当前状态
 
-已实现三个脚本：
+已实现四个脚本：
 
 - `crawler/175dt-crawler.mjs`：抓取 175DT 分类导航，并输出标准 JSONL 题库文件。
 - `scripts/merge-questions.mjs`：合并多个平台的 JSONL，按内容 hash 去重并合并来源。

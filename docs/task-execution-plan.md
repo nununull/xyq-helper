@@ -1,5 +1,13 @@
 # 梦幻西游答题助手任务执行计划
 
+> [!WARNING]
+> **历史计划 / 已废弃**
+>
+> 本文记录早期本地题库方案，仅用于追溯历史，**不得再作为当前运行时实现依据**。当前实时查询设计与执行依据请以以下文档为准：
+>
+> - [实时题目查询设计](./superpowers/specs/2026-08-06-frontend-realtime-question-query-design.md)
+> - [实时题目查询实施计划](./superpowers/plans/2026-08-06-frontend-realtime-question-query.md)
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 构建一个 Vue3 + TypeScript + Vite 纯前端答题助手，完成屏幕捕获、OCR、题库检索和浏览器内答案提示的可用闭环。
