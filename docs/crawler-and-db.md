@@ -9,6 +9,16 @@
 - `scripts/build-index.mjs`：读取 JSONL，清洗去重，生成 `public/data/questions.json`、`public/data/trigram-index.json` 和 `public/data/version.json`。
 - `scripts/build-db.mjs`：备用 SQLite 构建脚本，不作为默认分享版检索方案。
 
+## 运行时使用方式
+
+普通用户运行当前前端时不需要先执行爬虫、合并脚本或本地题库构建。用户在主控制台选择活动分类并开始连续识别后，运行时会先按“分类 ID + 标准化题目指纹”查询 IndexedDB 成功缓存；缓存未命中时直接调用 175DT 搜索接口。完整题干没有候选时只会再使用一个回退关键词查询一次。
+
+远程结果返回的是答案文本，前端会根据当前 OCR 选项重新推导 A/B/C/D；成功结果写入 IndexedDB，刷新页面后可以继续复用。远程查询失败不会写入成功缓存：普通失败对当前题目冷却 10 秒，手动重试可绕过该冷却；HTTP 403/429 对当前分类冷却 60 秒。
+
+由于前端静态页面与 `s.175dt.com` 跨源，正常使用远程查询需要用户在浏览器安装并启用允许该目标站请求的 CORS 扩展。未启用、网络中断或跨域请求被拦截时，界面会显示“可能是 CORS 或网络错误”。
+
+本文后续命令继续保留，用于离线数据集维护、增量抓取、来源合并、JSON trigram 索引生成和 SQLite 备用产物构建。它们是维护工具和可选离线能力，不是普通用户启动应用的前置步骤，也不是当前生产运行时的默认查询链路。
+
 ## 重要限制
 
 175DT 当前页面的完整题库没有直接出现在静态 HTML 中，搜索逻辑通过独立搜索接口完成。当前已确认可用接口：
@@ -214,9 +224,9 @@ npm run build:index
 node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝 --expand true --rounds 3 --max-keywords-per-round 50 --delay 1200
 ```
 
-## JSON trigram 索引策略
+## JSON trigram 索引策略（可选离线能力）
 
-正式分享版使用 JSON + trigram 倒排索引，不依赖浏览器端 SQLite FTS5。
+构建链路可以生成 JSON + trigram 倒排索引，供离线数据维护或未来显式回退使用，不依赖浏览器端 SQLite FTS5。当前生产运行时默认采用“IndexedDB 成功缓存 → 175DT 远程查询”，不会强制下载这些 JSON 产物。
 
 构建输出：
 
@@ -224,7 +234,7 @@ node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝 --expand true --rounds 3 --m
 - `public/data/trigram-index.json`：三字片段到题目 ID 的倒排索引。
 - `public/data/version.json`：题库版本、数量、hash 和检索模式。
 
-运行时流程：
+可选离线检索流程：
 
 ```text
 OCR 题干
