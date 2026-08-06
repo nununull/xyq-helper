@@ -55,7 +55,7 @@ export const defaultAppConfig: AppConfig = {
   },
 }
 
-type PartialAppConfig = {
+export type PartialAppConfig = {
   [Key in keyof AppConfig]?: Partial<AppConfig[Key]>
 }
 

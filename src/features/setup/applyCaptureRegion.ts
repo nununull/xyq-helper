@@ -1,38 +1,24 @@
-import type { AppConfig } from '../../types/config'
+import { mergeAppConfig, type AppConfig, type PartialAppConfig } from '../../types/config'
 import type { CaptureRegion } from '../../types/capture'
 
 export type CaptureRegionKind = 'question' | 'options'
 
 /** 根据向导步骤生成下一份捕获区域配置草稿。 */
 export function applyCaptureRegion(
-  config: AppConfig,
+  config: PartialAppConfig,
   kind: CaptureRegionKind,
   region: CaptureRegion,
   devicePixelRatio: number,
 ): AppConfig {
-  const capture = {
-    ...config.capture,
-    questionRegion: config.capture.questionRegion
-      ? { ...config.capture.questionRegion }
-      : null,
-    optionsRegion: config.capture.optionsRegion
-      ? { ...config.capture.optionsRegion }
-      : null,
-  }
+  const next = mergeAppConfig(config)
 
   if (kind === 'question') {
-    capture.questionRegion = { ...region }
-    capture.optionsRegion = null
+    next.capture.questionRegion = { ...region }
+    next.capture.optionsRegion = null
   } else {
-    capture.optionsRegion = { ...region }
-    capture.devicePixelRatio = devicePixelRatio
+    next.capture.optionsRegion = { ...region }
+    next.capture.devicePixelRatio = devicePixelRatio
   }
 
-  return {
-    capture,
-    ocr: { ...config.ocr },
-    matcher: { ...config.matcher },
-    remoteQuery: { ...config.remoteQuery },
-    overlay: { ...config.overlay },
-  }
+  return next
 }

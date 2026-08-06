@@ -8,7 +8,7 @@
 > - [实时题目查询设计](./superpowers/specs/2026-08-06-frontend-realtime-question-query-design.md)
 > - [实时题目查询实施计划](./superpowers/plans/2026-08-06-frontend-realtime-question-query.md)
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **历史原文（不得执行）：** 旧计划曾要求 agentic workers 使用 `superpowers:subagent-driven-development` 或 `superpowers:executing-plans` 逐项实施；该行为要求已随本文废弃，不得用于当前任务。
 
 **Goal:** 构建一个 Vue3 + TypeScript + Vite 纯前端答题助手，完成屏幕捕获、OCR、题库检索和浏览器内答案提示的可用闭环。
 
