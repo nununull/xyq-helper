@@ -388,6 +388,40 @@ describe('串行连续识别控制器', () => {
     expect(harness.matcher.result).toBeNull()
   })
 
+  it('OCR 等待期间缓存代次变化会丢弃旧帧且不复活内存缓存', async () => {
+    let resolvePendingOCR!: (result: OCRResult) => void
+    const harness = createHarness({
+      frames: [frame('old-one'), frame('old-two'), frame('pending')],
+      recognizeFrame: async (captured) => {
+        if (captured.frameHash !== 'pending') return ocrResult()
+        return await new Promise<OCRResult>((resolve) => {
+          resolvePendingOCR = resolve
+        })
+      },
+      query: async () => successfulQuery(),
+    })
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await advanceFrame(harness, 2)
+    await vi.waitFor(() => expect(harness.writeCache).toHaveBeenCalledTimes(1))
+    await advanceFrame(harness, 3)
+    await vi.waitFor(() => expect(harness.recognizeFrame).toHaveBeenCalledTimes(3))
+
+    harness.recognition.cacheGeneration += 1
+    harness.recognition.lastCompletedFingerprint = null
+    harness.recognition.lastCompletedQuestion = null
+    harness.matcher.result = null
+    resolvePendingOCR(ocrResult())
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    harness.controller.stop()
+
+    expect(harness.ocrPresentation.publishResult).toHaveBeenCalledTimes(2)
+    expect(harness.query).toHaveBeenCalledTimes(1)
+    expect(harness.writeCache).toHaveBeenCalledTimes(1)
+    expect(harness.matcher.result).toBeNull()
+  })
+
   it('主查询为空时只使用一个降级关键词查询一次', async () => {
     const harness = createHarness({
       frames: [frame('one'), frame('two')],
@@ -660,6 +694,49 @@ describe('串行连续识别控制器', () => {
     harness.controller.stop()
 
     expect(harness.recognizeFrame).toHaveBeenCalledTimes(2)
+    expect(harness.matcher.result?.answerText).toBe('李贺')
+  })
+
+  it('题目与分类冷却重叠时静态快照等待较晚的分类冷却到期', async () => {
+    let now = 1_000
+    const rateLimitedQuestion = '被称为“诗圣”的唐代诗人是谁？'
+    const harness = createHarness({
+      frames: [
+        frame('question-one'), frame('question-two'),
+        frame('category-one'), frame('category-two'),
+        frame('question-three'), frame('question-four'),
+        frame('question-four'), frame('question-four'),
+      ],
+      now: () => now,
+      recognizeFrame: async (captured) => ocrResult(
+        captured.frameHash.startsWith('category') ? rateLimitedQuestion : questionText,
+      ),
+      query: vi.fn()
+        .mockResolvedValueOnce({ kind: 'timeout', message: '远程题库响应超时' })
+        .mockResolvedValueOnce({ kind: 'rateLimited', message: '接口暂时拒绝请求' })
+        .mockResolvedValueOnce(successfulQuery()),
+    })
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await advanceFrame(harness, 2)
+    await vi.waitFor(() => expect(harness.query).toHaveBeenCalledTimes(1))
+    await advanceFrame(harness, 3)
+    await advanceFrame(harness, 4)
+    await vi.waitFor(() => expect(harness.query).toHaveBeenCalledTimes(2))
+    await advanceFrame(harness, 5)
+    await advanceFrame(harness, 6)
+
+    now += 10_001
+    await advanceFrame(harness, 7)
+    expect(harness.query).toHaveBeenCalledTimes(2)
+
+    now += 50_000
+    await advanceFrame(harness, 8)
+    await vi.waitFor(() => expect(harness.query).toHaveBeenCalledTimes(3))
+    harness.controller.stop()
+
+    expect(harness.recognizeFrame).toHaveBeenCalledTimes(6)
     expect(harness.matcher.result?.answerText).toBe('李贺')
   })
 

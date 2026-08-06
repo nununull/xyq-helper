@@ -92,7 +92,10 @@ interface StableQuestionSnapshot {
   frameHash: string
 }
 
-type SnapshotRetryKind = 'question' | 'category'
+interface ActiveCooldownState {
+  question: boolean
+  category: boolean
+}
 
 export interface RecognitionControllerDependencies {
   /** 捕获当前配置区域的一帧图像。 */
@@ -161,7 +164,7 @@ export function createRecognitionController(
   let lastStableFrameHash: string | null = null
   let lastStableQuestion: string | null = null
   let lastStableSnapshot: StableQuestionSnapshot | null = null
-  let pendingSnapshotRetry: SnapshotRetryKind | null = null
+  let snapshotRetryPending = false
   let activeFingerprint: string | null = null
   let activeSolveContext: SolveContext | null = null
   let lastCompletedCache: SimilarQuestionEntry<RemoteQuestionCache> | null = null
@@ -189,22 +192,23 @@ export function createRecognitionController(
     lastStableFrameHash = null
     lastStableQuestion = null
     lastStableSnapshot = null
-    pendingSnapshotRetry = null
+    snapshotRetryPending = false
     activeFingerprint = null
   }
 
-  /** 在共享缓存代次变化时废弃旧 solve 与所有内存快照。 */
-  function synchronizeCacheGeneration(): void {
-    if (observedCacheGeneration === recognitionStore.cacheGeneration) return
+  /** 同步共享缓存代次；变化时废弃旧 solve 与所有内存快照。 */
+  function synchronizeCacheGeneration(): boolean {
+    if (observedCacheGeneration === recognitionStore.cacheGeneration) return false
     observedCacheGeneration = recognitionStore.cacheGeneration
     invalidateActiveSolve()
     lastCompletedCache = null
     lastStableFrameHash = null
     lastStableQuestion = null
     lastStableSnapshot = null
-    pendingSnapshotRetry = null
+    snapshotRetryPending = false
     activeFingerprint = null
     matcherStore.clear()
+    return true
   }
 
   /** 将当前 OCR 结果保留为待下一帧确认的新题并立即废弃旧求解。 */
@@ -212,7 +216,7 @@ export function createRecognitionController(
     lastStableFrameHash = null
     lastStableQuestion = null
     lastStableSnapshot = null
-    pendingSnapshotRetry = null
+    snapshotRetryPending = false
     invalidateActiveSolve()
     activeFingerprint = null
     matcherStore.clear()
@@ -221,8 +225,8 @@ export function createRecognitionController(
   /** 清理过期记录后，查找与当前题干足够相似的有效失败冷却。 */
   function findActiveFailureCooldown(
     normalizedQuestion: string,
+    currentTime = now(),
   ): SimilarQuestionEntry<number> | null {
-    const currentTime = now()
     for (const [question, expiresAt] of questionFailureCooldowns) {
       if (expiresAt <= currentTime) questionFailureCooldowns.delete(question)
     }
@@ -233,6 +237,18 @@ export function createRecognitionController(
         value,
       })),
     )
+  }
+
+  /** 同时读取题目与分类冷却，避免较短冷却掩盖较长冷却。 */
+  function getActiveCooldownState(
+    normalizedQuestion: string,
+    categoryId: string,
+  ): ActiveCooldownState {
+    const currentTime = now()
+    return {
+      question: Boolean(findActiveFailureCooldown(normalizedQuestion, currentTime)),
+      category: (categoryRateLimitCooldowns.get(categoryId) ?? 0) > currentTime,
+    }
   }
 
   /** 以固定文案发布等待重试状态，并登记对应冷却时间。 */
@@ -255,14 +271,13 @@ export function createRecognitionController(
 
     if (result.kind === 'rateLimited') {
       categoryRateLimitCooldowns.set(context.categoryId, now() + CATEGORY_RATE_LIMIT_COOLDOWN_MS)
-      pendingSnapshotRetry = 'category'
     } else {
       questionFailureCooldowns.set(
         context.normalizedQuestion,
         now() + QUESTION_FAILURE_COOLDOWN_MS,
       )
-      pendingSnapshotRetry = 'question'
     }
+    snapshotRetryPending = true
     matcherStore.setError(message)
     recognitionStore.setPhase('waitingRetry', message)
   }
@@ -303,7 +318,7 @@ export function createRecognitionController(
       normalizedQuestion: parsed.normalizedQuestion,
       value: updated,
     }
-    pendingSnapshotRetry = null
+    snapshotRetryPending = false
     recognitionStore.setPhase('showingAnswer', '已从本地缓存找到答案')
   }
 
@@ -323,7 +338,7 @@ export function createRecognitionController(
         parsed.normalizedQuestion,
         now() + QUESTION_FAILURE_COOLDOWN_MS,
       )
-      pendingSnapshotRetry = 'question'
+      snapshotRetryPending = true
       const message = '当前题目未查询到'
       matcherStore.setError(message)
       recognitionStore.setPhase('waitingRetry', message)
@@ -334,7 +349,7 @@ export function createRecognitionController(
         parsed.normalizedQuestion,
         now() + QUESTION_FAILURE_COOLDOWN_MS,
       )
-      pendingSnapshotRetry = 'question'
+      snapshotRetryPending = true
       const message = '找到多道相似题'
       matcherStore.setRemoteCandidates(decision.candidates.slice(0, 2).map((candidate) => ({
         question: candidate.question,
@@ -385,12 +400,19 @@ export function createRecognitionController(
       normalizedQuestion: parsed.normalizedQuestion,
       value: cacheRecord,
     }
-    pendingSnapshotRetry = null
+    snapshotRetryPending = false
     recognitionStore.setPhase('showingAnswer', warning ?? '已找到远程答案')
   }
 
-  /** 为一个已经稳定的题目执行缓存、远程查询、排序和结果发布。 */
-  async function solveStableQuestion(parsed: ParsedQuestion, ocrConfidence: number): Promise<void> {
+  /** 为当前缓存代次中已经稳定的题目执行缓存、远程查询、排序和结果发布。 */
+  async function solveStableQuestion(
+    parsed: ParsedQuestion,
+    ocrConfidence: number,
+    expectedCacheGeneration: number,
+  ): Promise<void> {
+    synchronizeCacheGeneration()
+    if (expectedCacheGeneration !== recognitionStore.cacheGeneration) return
+
     const startedAt = performance.now()
     const categoryId = getCategoryId()
     const fingerprint = createQuestionFingerprint(parsed.normalizedQuestion)
@@ -400,7 +422,7 @@ export function createRecognitionController(
     const requestController = new AbortController()
     const context: SolveContext = {
       generation: ++activeSolveGeneration,
-      cacheGeneration: recognitionStore.cacheGeneration,
+      cacheGeneration: expectedCacheGeneration,
       requestController,
       fingerprint,
       categoryId,
@@ -464,7 +486,7 @@ export function createRecognitionController(
           parsed.normalizedQuestion,
           now() + QUESTION_FAILURE_COOLDOWN_MS,
         )
-        pendingSnapshotRetry = 'question'
+        snapshotRetryPending = true
         const message = error instanceof Error ? error.message : '连续识别发生异常'
         matcherStore.setError(message)
         recognitionStore.setPhase('waitingRetry', message)
@@ -483,7 +505,8 @@ export function createRecognitionController(
     if (scheduledGeneration !== lifecycleGeneration) return
     synchronizeCacheGeneration()
     const captured = await captureFrame()
-    if (scheduledGeneration !== lifecycleGeneration || !captured) return
+    const cacheChangedDuringCapture = synchronizeCacheGeneration()
+    if (scheduledGeneration !== lifecycleGeneration || cacheChangedDuringCapture || !captured) return
     if (captured.frameHash === lastStableFrameHash) {
       resumeStableSnapshotIfReady()
       return
@@ -497,11 +520,13 @@ export function createRecognitionController(
     try {
       recognized = await recognizeFrame(captured)
     } catch (error) {
-      if (scheduledGeneration !== lifecycleGeneration) return
+      const cacheChangedDuringRecognition = synchronizeCacheGeneration()
+      if (scheduledGeneration !== lifecycleGeneration || cacheChangedDuringRecognition) return
       ocrPresentation.publishError(error instanceof Error ? error.message : 'OCR 识别失败')
       throw error
     }
-    if (scheduledGeneration !== lifecycleGeneration) return
+    const cacheChangedDuringRecognition = synchronizeCacheGeneration()
+    if (scheduledGeneration !== lifecycleGeneration || cacheChangedDuringRecognition) return
     ocrPresentation.publishResult(recognized)
 
     recognitionStore.setPhase('stabilizing', '正在确认题目稳定性')
@@ -530,23 +555,22 @@ export function createRecognitionController(
       invalidateActiveSolve()
       activeFingerprint = fingerprint
     }
-    const activeCooldown = findActiveFailureCooldown(stable.normalizedQuestion)
-    if (activeCooldown) {
-      pendingSnapshotRetry = 'question'
-      recognitionStore.setPhase('waitingRetry', '当前题目暂在失败冷却中')
-      return
-    }
-
     const categoryId = getCategoryId()
-    if ((categoryRateLimitCooldowns.get(categoryId) ?? 0) > now()) {
-      pendingSnapshotRetry = 'category'
-      recognitionStore.setPhase('waitingRetry', '当前分类请求过于频繁，请稍后重试')
+    const cooldown = getActiveCooldownState(stable.normalizedQuestion, categoryId)
+    if (cooldown.question || cooldown.category) {
+      snapshotRetryPending = true
+      recognitionStore.setPhase(
+        'waitingRetry',
+        cooldown.category
+          ? '当前分类请求过于频繁，请稍后重试'
+          : '当前题目暂在失败冷却中',
+      )
       return
     }
 
     if (activeRequestController) return
-    pendingSnapshotRetry = null
-    void solveStableQuestion(stable, ocrConfidence)
+    snapshotRetryPending = false
+    void solveStableQuestion(stable, ocrConfidence, observedCacheGeneration)
   }
 
   /** 在静态画面冷却到期后复用最后稳定快照，避免重复 OCR。 */
@@ -555,23 +579,20 @@ export function createRecognitionController(
     if (
       !snapshot
       || snapshot.frameHash !== lastStableFrameHash
-      || !pendingSnapshotRetry
+      || !snapshotRetryPending
       || activeRequestController
     ) return
 
-    if (
-      pendingSnapshotRetry === 'question'
-      && findActiveFailureCooldown(snapshot.parsed.normalizedQuestion)
-    ) return
-
     const categoryId = getCategoryId()
-    if (
-      pendingSnapshotRetry === 'category'
-      && (categoryRateLimitCooldowns.get(categoryId) ?? 0) > now()
-    ) return
+    const cooldown = getActiveCooldownState(snapshot.parsed.normalizedQuestion, categoryId)
+    if (cooldown.question || cooldown.category) return
 
-    pendingSnapshotRetry = null
-    void solveStableQuestion(snapshot.parsed, snapshot.ocrConfidence)
+    snapshotRetryPending = false
+    void solveStableQuestion(
+      snapshot.parsed,
+      snapshot.ocrConfidence,
+      observedCacheGeneration,
+    )
   }
 
   /** 将一次识别帧追加到共享串行队列，避免 OCR 或请求重叠。 */
