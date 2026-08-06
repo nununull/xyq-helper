@@ -50,5 +50,6 @@ describe('远程查询文本', () => {
 
   it('不会选择通用问句词', () => {
     expect(selectFallbackKeyword('以下哪个说法是正确的？')).toBeNull()
+    expect(selectFallbackKeyword('下列哪种说法是正确的？')).toBeNull()
   })
 })

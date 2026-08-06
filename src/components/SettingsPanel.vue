@@ -5,11 +5,21 @@ import {
   clearRemoteQuestionCacheByCategory,
 } from '../composables/useLocalStorageDB'
 import { useConfigStore } from '../stores/config'
+import { useMatcherStore } from '../stores/matcher'
+import { useRecognitionStore } from '../stores/recognition'
 
 const configStore = useConfigStore()
+const matcherStore = useMatcherStore()
+const recognitionStore = useRecognitionStore()
 const cacheMessage = ref('')
 const cacheError = ref('')
 const selectedCategoryId = computed(() => configStore.config.remoteQuery.categoryId)
+
+/** 在持久化缓存清理成功后废弃内存快照与展示结果。 */
+function invalidateClearedCache(): void {
+  recognitionStore.invalidateRemoteCache()
+  matcherStore.clear()
+}
 
 /** 清理当前选中活动分类的远程答案缓存。 */
 async function clearSelectedCategoryCache(): Promise<void> {
@@ -22,6 +32,7 @@ async function clearSelectedCategoryCache(): Promise<void> {
 
   try {
     await clearRemoteQuestionCacheByCategory(selectedCategoryId.value)
+    invalidateClearedCache()
     cacheMessage.value = '当前分类缓存已清理'
   } catch (error) {
     cacheError.value = error instanceof Error ? error.message : '当前分类缓存清理失败'
@@ -34,6 +45,7 @@ async function clearRemoteCache(): Promise<void> {
   cacheError.value = ''
   try {
     await clearAllRemoteQuestionCache()
+    invalidateClearedCache()
     cacheMessage.value = '全部远程缓存已清理'
   } catch (error) {
     cacheError.value = error instanceof Error ? error.message : '远程缓存清理失败'

@@ -26,10 +26,13 @@ describe('题目稳定器', () => {
 
     stabilizer.push(parsed(firstQuestion))
 
-    expect(stabilizer.push(parsed(currentQuestion))).toMatchObject({
+    const result = stabilizer.push(parsed(currentQuestion))
+    expect(result).toMatchObject({
       kind: 'stable',
       question: { questionText: currentQuestion },
+      previousQuestion: { questionText: firstQuestion },
     })
+    expect(result.kind === 'firstFrame' ? null : result.similarity).toBeGreaterThanOrEqual(0.9)
   })
 
   it('明确标记明显换题并将其作为新的待配对题目', () => {
@@ -39,6 +42,7 @@ describe('题目稳定器', () => {
     expect(stabilizer.push(parsed('唐朝诗人李白被称为什么'))).toMatchObject({
       kind: 'switched',
       question: { questionText: '唐朝诗人李白被称为什么' },
+      previousQuestion: { questionText: '被称为诗鬼的诗人是谁' },
     })
     expect(stabilizer.push(parsed('唐朝诗人李白被称为什么'))).toMatchObject({
       kind: 'stable',

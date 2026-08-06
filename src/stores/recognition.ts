@@ -8,6 +8,7 @@ const initialState = () => ({
   phase: 'idle' as RecognitionPhase,
   message: '',
   running: false,
+  cacheGeneration: 0,
   lastCompletedFingerprint: null as string | null,
   lastCompletedQuestion: null as string | null,
   resultSource: null as ResultSource,
@@ -37,9 +38,21 @@ export const useRecognitionStore = defineStore('recognition', {
     setLastCompletedQuestion(question: string | null) {
       this.lastCompletedQuestion = question
     },
+    /** 递增远程缓存代次，并清除已完成题的内存语义。 */
+    invalidateRemoteCache() {
+      this.cacheGeneration += 1
+      this.lastCompletedFingerprint = null
+      this.lastCompletedQuestion = null
+      this.resultSource = null
+      this.durationMs = null
+      this.phase = this.running ? 'capturing' : 'idle'
+      this.message = this.running ? '缓存已清理，等待重新识别' : ''
+    },
     /** 将识别状态恢复为初始值。 */
     reset() {
+      const cacheGeneration = this.cacheGeneration
       Object.assign(this, initialState())
+      this.cacheGeneration = cacheGeneration
     },
   },
 })
