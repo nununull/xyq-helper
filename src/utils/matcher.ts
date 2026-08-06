@@ -73,6 +73,7 @@ export function matchQuestion(
     confidence: best.confidence,
     matchedQuestion: best.question.question,
     source: best.question.source,
+    resultSource: 'local',
     category: best.question.category,
     candidates,
   }

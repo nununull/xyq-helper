@@ -8,11 +8,15 @@ export interface MatchCandidate {
 }
 
 export interface MatchResult {
-  questionId: number
-  answer: AnswerOptionKey
+  questionId: number | string
+  answer: AnswerOptionKey | null
+  answerText?: string
   confidence: number
   matchedQuestion: string
   source: string
+  resultSource?: 'local' | 'cache' | 'remote'
+  durationMs?: number
+  warning?: string
   category?: string
   candidates: MatchCandidate[]
 }
