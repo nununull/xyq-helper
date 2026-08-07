@@ -1,6 +1,6 @@
 import type { MatchCandidate, MatchResult } from '../types/match'
 import type { ParsedQuestion, QuestionRecord } from '../types/question'
-import { diceSimilarity } from './normalizeText'
+import { diceSimilarity, ocrTextSimilarity } from './normalizeText'
 
 export const demoQuestions: QuestionRecord[] = [
   {
@@ -95,7 +95,10 @@ export function findLikelyQuestionText(
   let bestSimilarity = minimumSimilarity
 
   for (const question of pool) {
-    const similarity = diceSimilarity(parsed.normalizedQuestion, question.normalizedQuestion)
+    const similarity = Math.max(
+      diceSimilarity(parsed.normalizedQuestion, question.normalizedQuestion),
+      ocrTextSimilarity(parsed.normalizedQuestion, question.normalizedQuestion),
+    )
     if (similarity > bestSimilarity) {
       bestQuestion = question
       bestSimilarity = similarity

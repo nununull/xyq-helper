@@ -44,3 +44,45 @@ export function diceSimilarity(left: string, right: string): number {
 
   return (2 * overlap) / Math.max(1, a.length + b.length - 2)
 }
+
+const ocrConfusionGroups = [
+  '人入', '己已巳', '未末', '土士', '日曰目', '问间', '谁淮', '天夫',
+  '木本术', '王玉', '侯候', '辨辩瓣', '史吏', '千干于', '诗持', '口囗',
+]
+const ocrConfusionMap = new Map<string, number>()
+for (const group of ocrConfusionGroups) {
+  for (const left of group) {
+    for (const right of group) {
+      if (left !== right) ocrConfusionMap.set(`${left}${right}`, 0.25)
+    }
+  }
+}
+
+/** 使用形近字低代价编辑距离衡量 OCR 文本与标准题干的相似度。 */
+export function ocrTextSimilarity(left: string, right: string): number {
+  const source = normalizeQuestionText(left)
+  const target = normalizeQuestionText(right)
+  if (!source || !target) return 0
+  if (source === target) return 1
+
+  let previous = Array.from({ length: target.length + 1 }, (_, index) => index)
+  for (let sourceIndex = 1; sourceIndex <= source.length; sourceIndex += 1) {
+    const current = [sourceIndex]
+    for (let targetIndex = 1; targetIndex <= target.length; targetIndex += 1) {
+      const sourceCharacter = source[sourceIndex - 1]
+      const targetCharacter = target[targetIndex - 1]
+      const substitutionCost = sourceCharacter === targetCharacter
+        ? 0
+        : (ocrConfusionMap.get(`${sourceCharacter}${targetCharacter}`) ?? 1)
+      current[targetIndex] = Math.min(
+        previous[targetIndex] + 1,
+        current[targetIndex - 1] + 1,
+        previous[targetIndex - 1] + substitutionCost,
+      )
+    }
+    previous = current
+  }
+
+  const distance = previous[target.length] ?? Math.max(source.length, target.length)
+  return Math.max(0, 1 - distance / Math.max(source.length, target.length))
+}

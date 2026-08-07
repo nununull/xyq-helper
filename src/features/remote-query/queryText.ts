@@ -53,17 +53,10 @@ export function cleanRemoteQueryText(text: string): string {
 export function createCompactRemoteQueryText(text: string, maximumLength = 14): string {
   const cleaned = cleanRemoteQueryText(text)
   if (cleaned.length <= maximumLength) return cleaned
+  if (cleaned.length <= maximumLength * 2) return cleaned.slice(0, maximumLength)
 
   const keyword = selectFallbackKeyword(cleaned)
-  const keywordIndex = keyword ? cleaned.indexOf(keyword) : -1
-  if (!keyword || keywordIndex < 0) return cleaned.slice(0, maximumLength)
-
-  const contextLength = maximumLength - keyword.length
-  const start = Math.max(
-    0,
-    Math.min(cleaned.length - maximumLength, keywordIndex - Math.floor(contextLength / 2)),
-  )
-  return cleaned.slice(start, start + maximumLength)
+  return keyword ?? cleaned.slice(0, maximumLength)
 }
 
 /** 为分类内的标准化题干生成稳定且紧凑的本地缓存指纹。 */
@@ -89,7 +82,27 @@ export function selectFallbackKeyword(text: string): string | null {
   const quantity = normalized.match(/[0-9零〇一二三四五六七八九十百千万两]+(?:个|位|名|年|次|种|只|条|本|部|座|枚|件|岁|天|月|日)/)?.[0]
   if (quantity && isUsefulKeyword(quantity)) return quantity
 
+  const naturalWord = selectNaturalWord(normalized)
+  if (naturalWord) return naturalWord
+
   return selectHighInformationWindow(normalized)
+}
+
+/** 使用浏览器中文分词词典选择自然词组，避免把随机 OCR 字符串作为关键词。 */
+function selectNaturalWord(text: string): string | null {
+  const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' })
+  const candidates = [...segmenter.segment(text)]
+    .filter((item) => item.isWordLike)
+    .map((item) => item.segment.replace(/[^㐀-鿿0-9]/g, ''))
+    .filter((word) => isUsefulKeyword(word))
+    .map((word, order) => ({
+      word,
+      order,
+      score: word.length * 10 + (/[鬼诗朝代史名书国学战发明宗]/.test(word) ? 4 : 0),
+    }))
+    .sort((left, right) => right.score - left.score || left.order - right.order)
+
+  return candidates[0]?.word ?? null
 }
 
 /** 按成对引号与书名号的优先级提取专有内容。 */
