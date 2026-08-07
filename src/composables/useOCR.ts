@@ -100,7 +100,8 @@ async function createPaddleEngine(): Promise<PaddleOCREngine> {
     },
     textRecognitionBatchSize: 8,
     ortOptions: {
-      backend: 'auto',
+      // 固定 WASM，避免 WebGPU 会话创建失败后污染 ORT 的后端降级状态。
+      backend: 'wasm',
       // 单线程 WASM 无需服务器配置 COOP/COEP，普通静态服务器即可直接分享使用。
       numThreads: 1,
       simd: true,
