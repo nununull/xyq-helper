@@ -83,6 +83,28 @@ export function matchQuestion(
   }
 }
 
+/** 从本地题库召回最接近的标准题干，仅用于修正远程检索文本而不直接判定答案。 */
+export function findLikelyQuestionText(
+  parsed: ParsedQuestion,
+  questions: QuestionRecord[],
+  index?: TrigramIndex,
+  minimumSimilarity = 0.38,
+): string | null {
+  const pool = selectCandidatePool(parsed, questions, index)
+  let bestQuestion: QuestionRecord | null = null
+  let bestSimilarity = minimumSimilarity
+
+  for (const question of pool) {
+    const similarity = diceSimilarity(parsed.normalizedQuestion, question.normalizedQuestion)
+    if (similarity > bestSimilarity) {
+      bestQuestion = question
+      bestSimilarity = similarity
+    }
+  }
+
+  return bestQuestion?.question ?? null
+}
+
 function inferAnswerFromOptions(
   answerText: string | undefined,
   options: ParsedQuestion['options'],

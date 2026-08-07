@@ -23,7 +23,7 @@ import type {
   RemoteQuestionCache,
 } from '../../types/remoteQuestion'
 import { parseQuestion } from '../../utils/parseQuestion'
-import { matchQuestion } from '../../utils/matcher'
+import { findLikelyQuestionText, matchQuestion } from '../../utils/matcher'
 import {
   createCompactRemoteQueryText,
   createQuestionFingerprint,
@@ -109,6 +109,8 @@ export interface RecognitionControllerDependencies {
   query(categoryId: string, queryText: string, options: RemoteQueryOptions): Promise<RemoteQueryResult>
   /** 使用已加载的内置题库匹配当前题目。 */
   searchLocal(parsed: ParsedQuestion): MatchResult | null
+  /** 使用内置题库纠正远程检索所需的 OCR 题干。 */
+  correctRemoteQuery?(parsed: ParsedQuestion): string | null
   /** 等待下一次轮询间隔。 */
   sleep(durationMs: number): Promise<void>
   /** 按分类和题目指纹读取缓存。 */
@@ -145,6 +147,7 @@ export function createRecognitionController(
     captureFrame,
     recognizeFrame,
     searchLocal,
+    correctRemoteQuery,
     query,
     sleep,
     readCache,
@@ -510,7 +513,9 @@ export function createRecognitionController(
         return
       }
 
-      const primaryQueryText = createCompactRemoteQueryText(parsed.questionText)
+      const correctedQuestion = correctRemoteQuery?.(parsed)
+      const querySourceText = correctedQuestion ?? parsed.questionText
+      const primaryQueryText = createCompactRemoteQueryText(querySourceText)
       recognitionStore.setPhase('primaryQuery', `正在查询远程题库：${primaryQueryText}`)
       const primary = await query(categoryId, primaryQueryText, {
         signal: requestController.signal,
@@ -521,7 +526,7 @@ export function createRecognitionController(
 
       if (primary.kind === 'success' || primary.kind === 'empty') {
         let decision = rankRemoteCandidates(parsed, candidates, ocrConfidence)
-        const fallback = selectFallbackKeyword(parsed.questionText)
+        const fallback = selectFallbackKeyword(querySourceText)
         const shouldRetryWithKeyword = fallback
           && fallback !== primaryQueryText
           && (primary.kind === 'empty'
@@ -784,6 +789,11 @@ export function useRecognitionController(): RecognitionController {
       parsed,
       dbStore.questions,
       0.82,
+      dbStore.trigramIndex,
+    ),
+    correctRemoteQuery: (parsed) => findLikelyQuestionText(
+      parsed,
+      dbStore.questions,
       dbStore.trigramIndex,
     ),
     query: queryRemoteQuestions,

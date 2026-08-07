@@ -69,12 +69,15 @@ export function useOCR() {
 
 /** 将预处理后的像素数据转换为 Tesseract 可识别的画布。 */
 function imageDataToCanvas(image: ImageData): HTMLCanvasElement {
+  const borderSize = 10
   const canvas = document.createElement('canvas')
-  canvas.width = image.width
-  canvas.height = image.height
+  canvas.width = image.width + borderSize * 2
+  canvas.height = image.height + borderSize * 2
   const context = canvas.getContext('2d')
   if (context) {
-    context.putImageData(image, 0, 0)
+    context.fillStyle = '#fff'
+    context.fillRect(0, 0, canvas.width, canvas.height)
+    context.putImageData(image, borderSize, borderSize)
   }
   return canvas
 }

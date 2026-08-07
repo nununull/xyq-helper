@@ -6,10 +6,12 @@ import type { AppConfig } from '../types/config'
 export function preprocessImage(image: ImageData, options: AppConfig['ocr']): ImageData {
   const scaled = scaleImageData(image, Math.max(1, options.scale))
   const data = new Uint8ClampedArray(scaled.data)
+  const automaticThreshold = options.binarize ? calculateOtsuThreshold(data) : options.threshold
+  const threshold = Math.round(automaticThreshold * 0.75 + options.threshold * 0.25)
 
   for (let index = 0; index < data.length; index += 4) {
     const gray = Math.round(data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114)
-    const value = options.binarize ? (gray >= options.threshold ? 255 : 0) : gray
+    const value = options.binarize ? (gray >= threshold ? 255 : 0) : gray
 
     if (options.grayscale || options.binarize) {
       data[index] = value
@@ -21,6 +23,43 @@ export function preprocessImage(image: ImageData, options: AppConfig['ocr']): Im
   if (options.binarize) normalizeTextPolarity(data)
 
   return new ImageData(data, scaled.width, scaled.height)
+}
+
+/** 使用 Otsu 最大类间方差法计算适合当前游戏画面的自动二值化阈值。 */
+function calculateOtsuThreshold(data: Uint8ClampedArray): number {
+  const histogram = new Uint32Array(256)
+  let totalGray = 0
+  const pixelCount = data.length / 4
+
+  for (let index = 0; index < data.length; index += 4) {
+    const gray = Math.round(data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114)
+    histogram[gray] += 1
+    totalGray += gray
+  }
+
+  let backgroundCount = 0
+  let backgroundGray = 0
+  let maximumVariance = -1
+  let bestThreshold = 128
+  for (let threshold = 0; threshold < histogram.length; threshold += 1) {
+    backgroundCount += histogram[threshold]
+    if (backgroundCount === 0) continue
+    const foregroundCount = pixelCount - backgroundCount
+    if (foregroundCount === 0) break
+
+    backgroundGray += threshold * histogram[threshold]
+    const backgroundMean = backgroundGray / backgroundCount
+    const foregroundMean = (totalGray - backgroundGray) / foregroundCount
+    const variance = backgroundCount
+      * foregroundCount
+      * (backgroundMean - foregroundMean) ** 2
+    if (variance > maximumVariance) {
+      maximumVariance = variance
+      bestThreshold = threshold
+    }
+  }
+
+  return bestThreshold
 }
 
 /** 将深色游戏背景上的亮色文字统一转换为白底黑字，减少 OCR 极性误判。 */
