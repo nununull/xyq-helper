@@ -18,9 +18,29 @@ export function preprocessImage(image: ImageData, options: AppConfig['ocr']): Im
     }
   }
 
+  if (options.binarize) normalizeTextPolarity(data)
+
   return new ImageData(data, scaled.width, scaled.height)
 }
 
+/** 将深色游戏背景上的亮色文字统一转换为白底黑字，减少 OCR 极性误判。 */
+function normalizeTextPolarity(data: Uint8ClampedArray): void {
+  let whitePixels = 0
+  const pixelCount = data.length / 4
+  for (let index = 0; index < data.length; index += 4) {
+    if (data[index] >= 128) whitePixels += 1
+  }
+
+  if (whitePixels >= pixelCount / 2) return
+  for (let index = 0; index < data.length; index += 4) {
+    const inverted = 255 - data[index]
+    data[index] = inverted
+    data[index + 1] = inverted
+    data[index + 2] = inverted
+  }
+}
+
+/** 使用最近邻插值放大像素数据，避免小字号文字边缘被平滑。 */
 function scaleImageData(image: ImageData, scale: number): ImageData {
   if (scale === 1) {
     return image

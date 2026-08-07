@@ -19,12 +19,13 @@ import type {
   RemoteAmbiguousCandidate,
   RemoteQueryOptions,
   RemoteQueryResult,
+  RemoteQuestionCandidate,
   RemoteQuestionCache,
 } from '../../types/remoteQuestion'
 import { parseQuestion } from '../../utils/parseQuestion'
 import { matchQuestion } from '../../utils/matcher'
 import {
-  cleanRemoteQueryText,
+  createCompactRemoteQueryText,
   createQuestionFingerprint,
   findSimilarQuestionEntry,
   selectFallbackKeyword,
@@ -509,34 +510,44 @@ export function createRecognitionController(
         return
       }
 
-      recognitionStore.setPhase('primaryQuery', '正在查询远程题库')
-      const primary = await query(categoryId, cleanRemoteQueryText(parsed.questionText), {
+      const primaryQueryText = createCompactRemoteQueryText(parsed.questionText)
+      recognitionStore.setPhase('primaryQuery', `正在查询远程题库：${primaryQueryText}`)
+      const primary = await query(categoryId, primaryQueryText, {
         signal: requestController.signal,
         timeoutMs: getRequestTimeoutMs(),
       })
       if (!canPublish(context)) return
       let candidates = primary.kind === 'success' ? primary.candidates : []
 
-      if (primary.kind === 'empty') {
+      if (primary.kind === 'success' || primary.kind === 'empty') {
+        let decision = rankRemoteCandidates(parsed, candidates, ocrConfidence)
         const fallback = selectFallbackKeyword(parsed.questionText)
-        if (fallback) {
-          recognitionStore.setPhase('fallbackQuery', '正在使用关键词重试')
+        const shouldRetryWithKeyword = fallback
+          && fallback !== primaryQueryText
+          && (primary.kind === 'empty'
+            || decision.kind === 'rejected')
+
+        if (shouldRetryWithKeyword) {
+          recognitionStore.setPhase('fallbackQuery', `正在使用关键词重试：${fallback}`)
           const secondary = await query(categoryId, fallback, {
             signal: requestController.signal,
             timeoutMs: getRequestTimeoutMs(),
           })
           if (!canPublish(context)) return
-          if (secondary.kind === 'success') candidates = secondary.candidates
+          if (secondary.kind === 'success') {
+            candidates = mergeRemoteCandidates(candidates, secondary.candidates)
+            decision = rankRemoteCandidates(parsed, candidates, ocrConfidence)
+          }
           else if (secondary.kind !== 'empty') return publishFailure(secondary)
         }
-      } else if (primary.kind !== 'success') {
+
+        recognitionStore.setPhase('matching', '正在匹配候选题')
+        await publishDecision(decision, categoryId, fingerprint, parsed, startedAt)
+        return
+      } else {
         publishFailure(primary)
         return
       }
-
-      recognitionStore.setPhase('matching', '正在匹配候选题')
-      const decision = rankRemoteCandidates(parsed, candidates, ocrConfidence)
-      await publishDecision(decision, categoryId, fingerprint, parsed, startedAt)
     } catch (error) {
       if (canPublish(context)) {
         matcherStore.setRemoteCandidates([])
@@ -735,6 +746,19 @@ export function createRecognitionController(
       matcherStore.clear()
     },
   }
+}
+
+/** 合并两次远程查询结果，并按题干和答案文本去除重复候选。 */
+function mergeRemoteCandidates(
+  primary: RemoteQuestionCandidate[],
+  secondary: RemoteQuestionCandidate[],
+): RemoteQuestionCandidate[] {
+  return [...new Map(
+    [...primary, ...secondary].map((candidate) => [
+      `${candidate.question}\u0000${candidate.answerText}`,
+      candidate,
+    ]),
+  ).values()]
 }
 
 /** 使用屏幕捕获、OCR、远程查询、缓存与 Pinia Store 创建生产控制器。 */

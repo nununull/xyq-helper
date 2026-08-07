@@ -49,6 +49,23 @@ export function cleanRemoteQueryText(text: string): string {
     .trim()
 }
 
+/** 生成长度受控且保留高信息关键词上下文的远程主查询文本。 */
+export function createCompactRemoteQueryText(text: string, maximumLength = 14): string {
+  const cleaned = cleanRemoteQueryText(text)
+  if (cleaned.length <= maximumLength) return cleaned
+
+  const keyword = selectFallbackKeyword(cleaned)
+  const keywordIndex = keyword ? cleaned.indexOf(keyword) : -1
+  if (!keyword || keywordIndex < 0) return cleaned.slice(0, maximumLength)
+
+  const contextLength = maximumLength - keyword.length
+  const start = Math.max(
+    0,
+    Math.min(cleaned.length - maximumLength, keywordIndex - Math.floor(contextLength / 2)),
+  )
+  return cleaned.slice(start, start + maximumLength)
+}
+
 /** 为分类内的标准化题干生成稳定且紧凑的本地缓存指纹。 */
 export function createQuestionFingerprint(text: string): string {
   const normalized = normalizeQuestionText(text)
