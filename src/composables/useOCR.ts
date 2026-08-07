@@ -2,6 +2,7 @@ import type {
   OcrResult as PaddleResult,
   OcrResultItem,
 } from '@paddleocr/paddleocr-js'
+import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.jsep.wasm?url'
 import type { CaptureFrame } from '../types/capture'
 import type { AppConfig } from '../types/config'
 import type { OCRResult, OCRTextBlock } from '../types/ocr'
@@ -14,6 +15,8 @@ interface PaddleOCREngine {
 const MODEL_DIRECTORY = 'models'
 const DETECTION_MODEL = 'PP-OCRv5_mobile_det'
 const RECOGNITION_MODEL = 'PP-OCRv5_mobile_rec'
+// PaddleOCR 0.4.2 的类型仍限定为字符串，运行时则会原样转交 ORT 支持的精确资源映射。
+const ORT_WASM_PATHS = { wasm: ortWasmUrl } as unknown as string
 
 let engine: PaddleOCREngine | null = null
 let initialization: Promise<PaddleOCREngine> | null = null
@@ -102,6 +105,8 @@ async function createPaddleEngine(): Promise<PaddleOCREngine> {
     ortOptions: {
       // 固定 WASM，避免 WebGPU 会话创建失败后污染 ORT 的后端降级状态。
       backend: 'wasm',
+      // 显式传入 Vite 生成的带哈希资源地址，避免部署服务器将缺失的 WASM 请求回退成 index.html。
+      wasmPaths: ORT_WASM_PATHS,
       // 单线程 WASM 无需服务器配置 COOP/COEP，普通静态服务器即可直接分享使用。
       numThreads: 1,
       simd: true,
@@ -119,13 +124,15 @@ function scaleImageForPaddle(image: ImageData, scale: number): HTMLCanvasElement
   const source = document.createElement('canvas')
   source.width = image.width
   source.height = image.height
-  source.getContext('2d')?.putImageData(image, 0, 0)
+  // PaddleOCR 会从输入画布回读像素，创建上下文时直接声明高频读取用途。
+  source.getContext('2d', { willReadFrequently: true })?.putImageData(image, 0, 0)
 
   if (scale === 1) return source
   const target = document.createElement('canvas')
   target.width = Math.round(image.width * scale)
   target.height = Math.round(image.height * scale)
-  const context = target.getContext('2d')
+  // 放大后的画布同样会被 OCR 管线通过 getImageData 读取。
+  const context = target.getContext('2d', { willReadFrequently: true })
   if (!context) return source
   context.imageSmoothingEnabled = true
   context.imageSmoothingQuality = 'high'

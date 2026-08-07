@@ -106,7 +106,8 @@ export function useScreenCapture() {
     const sourceCanvas = document.createElement('canvas')
     sourceCanvas.width = videoElement.videoWidth
     sourceCanvas.height = videoElement.videoHeight
-    const sourceContext = sourceCanvas.getContext('2d')
+    // 捕获流程会连续读取题干和选项像素，提示浏览器优先采用适合频繁回读的画布实现。
+    const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true })
     if (!sourceContext) {
       return null
     }
