@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, shallowRef } from 'vue'
-import AnswerOverlay from './AnswerOverlay.vue'
 import CaptureCalibration from './CaptureCalibration.vue'
 import CapturePreview from './CapturePreview.vue'
 import CategorySelector from './CategorySelector.vue'
@@ -194,7 +193,14 @@ onBeforeUnmount(() => {
           @completed="completeCalibration"
           @cancel="cancelCalibration"
         />
-        <CapturePreview v-else :frame="captureStore.lastFrame" />
+        <CapturePreview
+          v-else
+          :stream="previewStream"
+          :frame="captureStore.lastFrame"
+          :result="matcherStore.result"
+          :candidates="matcherStore.remoteCandidates"
+          :recognition-message="recognitionStore.message"
+        />
         <OCRResult :result="ocrStore.lastResult" :parsed="parsedQuestion" />
         <section class="panel">
           <h2>匹配结果</h2>
@@ -213,7 +219,6 @@ onBeforeUnmount(() => {
             <p>{{ matcherStore.result.matchedQuestion }}</p>
           </template>
         </section>
-        <AnswerOverlay :result="matcherStore.result" />
       </main>
 
       <aside class="rightbar">
