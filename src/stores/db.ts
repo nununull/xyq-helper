@@ -5,6 +5,11 @@ import { listUnknownQuestions, saveUnknownQuestion } from '../composables/useLoc
 import type { TrigramIndex } from '../utils/matcher'
 import { demoQuestions } from '../utils/matcher'
 
+/** 生成兼容站点子目录部署的静态数据地址 */
+function getDataUrl(fileName: string) {
+  return new URL(`data/${fileName}`, document.baseURI).href
+}
+
 export const useDBStore = defineStore('db', {
   state: () => ({
     ready: false,
@@ -20,9 +25,9 @@ export const useDBStore = defineStore('db', {
     async initializeQuestionIndex() {
       try {
         const [versionResponse, questionsResponse, indexResponse] = await Promise.all([
-          fetch('/data/version.json'),
-          fetch('/data/questions.json'),
-          fetch('/data/trigram-index.json'),
+          fetch(getDataUrl('version.json')),
+          fetch(getDataUrl('questions.json')),
+          fetch(getDataUrl('trigram-index.json')),
         ])
 
         if (!versionResponse.ok || !questionsResponse.ok || !indexResponse.ok) {
