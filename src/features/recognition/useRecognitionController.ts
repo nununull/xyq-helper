@@ -155,7 +155,7 @@ export function createRecognitionController(
     recognitionStore,
     matcherStore,
   } = dependencies
-  const stabilizer = createQuestionStabilizer()
+  const stabilizer = createQuestionStabilizer(0.78, 3)
   const questionFailureCooldowns = new Map<string, number>()
   const categoryRateLimitCooldowns = new Map<string, number>()
 
@@ -462,7 +462,12 @@ export function createRecognitionController(
     const startedAt = performance.now()
     const categoryId = getCategoryId()
     const fingerprint = createQuestionFingerprint(parsed.normalizedQuestion)
-    if (!categoryId) return
+    if (!categoryId) {
+      const message = '请先选择活动分类'
+      matcherStore.setError(message)
+      recognitionStore.setPhase('waitingRetry', message)
+      return
+    }
 
     activeRequestController?.abort()
     const requestController = new AbortController()
@@ -585,7 +590,7 @@ export function createRecognitionController(
     recognitionStore.setPhase('stabilizing', '正在确认题目稳定性')
     const parsed = parseQuestion(recognized)
     const stability = stabilizer.push(parsed)
-    if (stability.kind !== 'stable') {
+    if (stability.kind !== 'stable' && stability.kind !== 'forcedStable') {
       beginPendingQuestion()
       return
     }
