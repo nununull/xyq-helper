@@ -32,6 +32,7 @@ const ocr = useOCR()
 const controller = useRecognitionController()
 const previewStream = shallowRef<MediaStream | null>(null)
 const calibrating = shallowRef(false)
+const focusMode = shallowRef(false)
 const activePage = shallowRef<'recognition' | 'questionBank'>('recognition')
 const pageSwitching = shallowRef(false)
 const ocrRuntimeLabel = computed(() => ({
@@ -97,6 +98,7 @@ async function startCapture(): Promise<void> {
     if (!ownsCapture) return
     previewStream.value = screenCapture.getActiveStream()
     captureStore.setStatus('active')
+    focusMode.value = true
     if (hasCalibration.value) {
       controller.start()
     } else {
@@ -107,6 +109,7 @@ async function startCapture(): Promise<void> {
     screenCapture.stopCapture()
     previewStream.value = null
     calibrating.value = false
+    focusMode.value = false
     captureStore.setError(getCaptureErrorMessage(error))
   }
 }
@@ -117,6 +120,7 @@ function stopCapture(): void {
   screenCapture.stopCapture()
   previewStream.value = null
   calibrating.value = false
+  focusMode.value = false
   captureStore.setStatus('paused')
 }
 
@@ -128,6 +132,7 @@ async function selectCategory(categoryId: string): Promise<void> {
   screenCapture.stopCapture()
   previewStream.value = null
   calibrating.value = false
+  focusMode.value = false
   captureStore.setStatus('paused')
   await configStore.selectActivityCategory(categoryId)
 }
@@ -137,6 +142,7 @@ function handleCaptureEnded(): void {
   controller.stop()
   previewStream.value = null
   calibrating.value = false
+  focusMode.value = false
   captureStore.setStatus('paused')
   captureStore.error = '屏幕共享已停止，请重新连接游戏画面'
 }
@@ -146,6 +152,12 @@ function beginCalibration(): void {
   controller.stop()
   controller.resetForCategory()
   calibrating.value = true
+  focusMode.value = true
+}
+
+/** 切换共享画面的专注布局，让用户按需显示或收起辅助面板。 */
+function toggleFocusMode(): void {
+  focusMode.value = !focusMode.value
 }
 
 /** 保存完整答题区域并立即启动连续识别。 */
@@ -224,6 +236,16 @@ onBeforeUnmount(() => {
             <i />{{ captureStatusLabel }}
           </span>
           <button
+            class="focus-action"
+            :class="{ active: focusMode }"
+            type="button"
+            :aria-pressed="focusMode"
+            :disabled="!previewStream"
+            @click="toggleFocusMode"
+          >
+            {{ focusMode ? '退出专注' : '放大画面' }}
+          </button>
+          <button
             class="primary-action"
             type="button"
             :disabled="!selectedCategoryId || captureStore.status === 'requesting' || captureStore.status === 'active'"
@@ -266,7 +288,7 @@ onBeforeUnmount(() => {
 
     <QuestionBankManager v-if="activePage === 'questionBank'" @close="closeQuestionBank" />
 
-    <div v-else class="dashboard-grid">
+    <div v-else class="dashboard-grid" :class="{ 'focus-mode': focusMode }">
       <CategorySelector :selected-id="selectedCategoryId" @select="selectCategory" />
 
       <main class="workspace">
@@ -283,6 +305,7 @@ onBeforeUnmount(() => {
           :stream="previewStream"
           :frame="captureStore.lastFrame"
           :question-region="calibratedAnswerRegion"
+          :focus-mode="focusMode"
         >
           <AnswerOverlay
             :result="matcherStore.result"

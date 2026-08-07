@@ -6,6 +6,7 @@ const props = defineProps<{
   stream: MediaStream | null
   frame: CaptureFrame | null
   questionRegion: CaptureRegion | null
+  focusMode: boolean
 }>()
 
 const video = ref<HTMLVideoElement | null>(null)
@@ -52,7 +53,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="panel capture-preview-panel">
+  <section class="panel capture-preview-panel" :class="{ 'is-focus-mode': focusMode }">
     <div class="capture-preview-header">
       <h2>共享画面</h2>
       <span v-if="frame" class="muted">

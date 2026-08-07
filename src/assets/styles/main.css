@@ -217,6 +217,18 @@ textarea:focus {
   background: #101916;
 }
 
+.focus-action {
+  border-color: rgb(232 184 93 / 24%);
+  background: rgb(232 184 93 / 6%);
+  color: var(--primary);
+}
+
+.focus-action.active {
+  border-color: rgb(82 211 156 / 30%);
+  background: rgb(82 211 156 / 8%);
+  color: var(--success);
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -264,6 +276,17 @@ textarea:focus {
   width: min(1680px, 100%);
   margin: 0 auto;
   padding: 18px;
+}
+
+.dashboard-grid.focus-mode {
+  grid-template-columns: minmax(0, 1fr);
+  width: min(1920px, 100%);
+  padding: 12px 18px 24px;
+}
+
+.dashboard-grid.focus-mode > .category-sidebar,
+.dashboard-grid.focus-mode > .rightbar {
+  display: none;
 }
 
 .panel {
@@ -570,6 +593,40 @@ textarea:focus {
   min-width: 0;
   min-height: 0;
   pointer-events: auto;
+}
+
+.capture-preview-panel.is-focus-mode {
+  min-height: 0;
+}
+
+.capture-preview-panel.is-focus-mode .capture-preview-stage {
+  position: relative;
+  display: block;
+}
+
+.capture-preview-panel.is-focus-mode .capture-preview-video video {
+  width: 100%;
+}
+
+.capture-preview-panel.is-focus-mode .capture-preview-overlay {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  width: clamp(280px, 24vw, 380px);
+  max-height: calc(100% - 24px);
+}
+
+.capture-preview-panel.is-focus-mode .capture-preview-stage.answer-dock-left .capture-preview-overlay {
+  right: auto;
+  left: 12px;
+}
+
+.capture-preview-panel.is-focus-mode .answer-overlay {
+  height: auto;
+  max-height: 100%;
+  background: rgb(12 24 20 / 95%);
+  backdrop-filter: blur(12px);
 }
 
 .capture-preview-panel > .muted:last-child {
