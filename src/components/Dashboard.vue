@@ -1,13 +1,14 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount } from 'vue'
+import { computed, onBeforeUnmount, shallowRef } from 'vue'
 import AnswerOverlay from './AnswerOverlay.vue'
+import CaptureCalibration from './CaptureCalibration.vue'
 import CapturePreview from './CapturePreview.vue'
+import CategorySelector from './CategorySelector.vue'
 import OCRResult from './OCRResult.vue'
 import SettingsPanel from './SettingsPanel.vue'
 import UnknownQuestions from './UnknownQuestions.vue'
 import { useOCR } from '../composables/useOCR'
 import { useScreenCapture } from '../composables/useScreenCapture'
-import { activityCategories } from '../data/activityCategories'
 import { useRecognitionController } from '../features/recognition/useRecognitionController'
 import { getCaptureErrorMessage, useCaptureStore } from '../stores/capture'
 import { useConfigStore } from '../stores/config'
@@ -15,6 +16,9 @@ import { useMatcherStore } from '../stores/matcher'
 import { useOCRStore } from '../stores/ocr'
 import { useRecognitionStore } from '../stores/recognition'
 import { parseQuestion } from '../utils/parseQuestion'
+import { applyCaptureRegions } from '../features/setup/applyCaptureRegion'
+import { hasValidCaptureRegions } from '../types/config'
+import type { CaptureRegion } from '../types/capture'
 
 const captureStore = useCaptureStore()
 const configStore = useConfigStore()
@@ -24,13 +28,25 @@ const recognitionStore = useRecognitionStore()
 const screenCapture = useScreenCapture()
 const ocr = useOCR()
 const controller = useRecognitionController()
+const previewStream = shallowRef<MediaStream | null>(null)
+const calibrating = shallowRef(false)
 
 const selectedCategoryId = computed(() => configStore.config.remoteQuery.categoryId)
+const hasCalibration = computed(() => hasValidCaptureRegions(configStore.config.capture))
+const actionHint = computed(() => {
+  if (!selectedCategoryId.value) return '请先选择左侧活动分类，再连接游戏画面。'
+  if (captureStore.status === 'requesting') return '正在等待浏览器共享授权，请在弹出的窗口中选择游戏窗口。'
+  if (calibrating.value) return '请在下方实时画面中依次框选题干和选项。'
+  if (captureStore.status === 'active') return '游戏画面已连接，连续识别正在运行。'
+  return hasCalibration.value
+    ? '点击“连接游戏画面”，授权成功后会自动开始识别。'
+    : '点击“连接游戏画面”，授权后先完成一次区域校准。'
+})
 const parsedQuestion = computed(() => (
   ocrStore.lastResult ? parseQuestion(ocrStore.lastResult) : null
 ))
 
-/** 获取屏幕共享后启动连续识别。 */
+/** 获取屏幕共享，并根据区域配置进入校准或连续识别。 */
 async function startCapture(): Promise<void> {
   if (
     !selectedCategoryId.value
@@ -42,11 +58,18 @@ async function startCapture(): Promise<void> {
     captureStore.setStatus('requesting')
     const ownsCapture = await screenCapture.startCapture()
     if (!ownsCapture) return
+    previewStream.value = screenCapture.getActiveStream()
     captureStore.setStatus('active')
-    controller.start()
+    if (hasCalibration.value) {
+      controller.start()
+    } else {
+      calibrating.value = true
+    }
   } catch (error) {
     controller.stop()
     screenCapture.stopCapture()
+    previewStream.value = null
+    calibrating.value = false
     captureStore.setError(getCaptureErrorMessage(error))
   }
 }
@@ -55,6 +78,8 @@ async function startCapture(): Promise<void> {
 function stopCapture(): void {
   controller.stop()
   screenCapture.stopCapture()
+  previewStream.value = null
+  calibrating.value = false
   captureStore.setStatus('paused')
 }
 
@@ -64,6 +89,8 @@ async function selectCategory(categoryId: string): Promise<void> {
   controller.stop()
   controller.resetForCategory()
   screenCapture.stopCapture()
+  previewStream.value = null
+  calibrating.value = false
   captureStore.setStatus('paused')
   await configStore.selectActivityCategory(categoryId)
 }
@@ -71,23 +98,43 @@ async function selectCategory(categoryId: string): Promise<void> {
 /** 处理用户从浏览器共享控件主动结束捕获。 */
 function handleCaptureEnded(): void {
   controller.stop()
+  previewStream.value = null
+  calibrating.value = false
   captureStore.setStatus('paused')
+  captureStore.error = '屏幕共享已停止，请重新连接游戏画面'
 }
 
-/** 页面隐藏时立即暂停识别并中止在途请求。 */
-function handleVisibilityChange(): void {
-  if (!document.hidden) return
+/** 暂停识别并在当前共享画面上重新校准。 */
+function beginCalibration(): void {
   controller.stop()
-  screenCapture.stopCapture()
-  captureStore.setStatus('paused')
+  controller.resetForCategory()
+  calibrating.value = true
+}
+
+/** 保存两个视频像素区域并立即启动连续识别。 */
+async function completeCalibration(
+  questionRegion: CaptureRegion,
+  optionsRegion: CaptureRegion,
+): Promise<void> {
+  await configStore.update(applyCaptureRegions(
+    configStore.config,
+    questionRegion,
+    optionsRegion,
+  ))
+  calibrating.value = false
+  controller.start()
+}
+
+/** 取消校准；存在旧有效区域时恢复连续识别。 */
+function cancelCalibration(): void {
+  calibrating.value = false
+  if (hasCalibration.value) controller.start()
 }
 
 const unsubscribeCaptureEnded = screenCapture.onCaptureEnded(handleCaptureEnded)
-document.addEventListener('visibilitychange', handleVisibilityChange)
 
 onBeforeUnmount(() => {
   unsubscribeCaptureEnded()
-  document.removeEventListener('visibilitychange', handleVisibilityChange)
   controller.stop()
   screenCapture.stopCapture()
   void ocr.terminateOCR()
@@ -98,7 +145,7 @@ onBeforeUnmount(() => {
   <section class="dashboard">
     <header class="topbar">
       <div>
-        <h1>梦幻西游答题助手</h1>
+        <h1>xyq_helper</h1>
         <p>纯前端识别，答案提示仅显示在浏览器窗口内。</p>
       </div>
       <div class="topbar-actions">
@@ -108,32 +155,44 @@ onBeforeUnmount(() => {
           :disabled="!selectedCategoryId || captureStore.status === 'requesting' || captureStore.status === 'active'"
           @click="startCapture"
         >
-          开始连续识别
+          连接游戏画面
         </button>
-        <button type="button" :disabled="!recognitionStore.running" @click="stopCapture">停止</button>
-        <button type="button" :disabled="captureStore.status !== 'active'" @click="controller.retry">
+        <button
+          type="button"
+          :disabled="captureStore.status !== 'active' && captureStore.status !== 'requesting'"
+          @click="stopCapture"
+        >
+          停止
+        </button>
+        <button
+          type="button"
+          :disabled="captureStore.status !== 'active' || calibrating"
+          @click="controller.retry"
+        >
           手动重试
+        </button>
+        <button
+          type="button"
+          :disabled="captureStore.status !== 'active' || calibrating"
+          @click="beginCalibration"
+        >
+          重新校准
         </button>
       </div>
     </header>
 
     <div class="dashboard-grid">
-      <aside class="panel sidebar">
-        <h2>活动分类</h2>
-        <button
-          v-for="category in activityCategories"
-          :key="category.id"
-          type="button"
-          class="category-button"
-          :class="{ active: selectedCategoryId === category.id }"
-          @click="selectCategory(category.id)"
-        >
-          {{ category.name }}
-        </button>
-      </aside>
+      <CategorySelector :selected-id="selectedCategoryId" @select="selectCategory" />
 
       <main class="workspace">
-        <CapturePreview :frame="captureStore.lastFrame" />
+        <p class="panel flow-hint">{{ actionHint }}</p>
+        <CaptureCalibration
+          v-if="calibrating && previewStream"
+          :stream="previewStream"
+          @completed="completeCalibration"
+          @cancel="cancelCalibration"
+        />
+        <CapturePreview v-else :frame="captureStore.lastFrame" />
         <OCRResult :result="ocrStore.lastResult" :parsed="parsedQuestion" />
         <section class="panel">
           <h2>匹配结果</h2>

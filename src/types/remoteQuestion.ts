@@ -5,6 +5,11 @@ export interface ActivityCategory {
   name: string
 }
 
+export interface ActivityCategoryGroup {
+  name: string
+  categories: ActivityCategory[]
+}
+
 export interface RemoteQuestionCandidate {
   question: string
   answerText: string

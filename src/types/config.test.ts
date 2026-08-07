@@ -9,7 +9,7 @@ describe('应用配置迁移', () => {
     expect(defaultAppConfig.capture.captureFps).toBe(2)
   })
 
-  it('旧配置缺少远程查询字段时补充默认值并保留已有嵌套值', async () => {
+  it('旧配置缺少远程查询字段时补充默认值并使旧坐标失效', async () => {
     vi.stubGlobal('window', { devicePixelRatio: 2 })
     const { mergeAppConfig } = await import('./config')
     const legacyConfig = {
@@ -27,10 +27,28 @@ describe('应用配置迁移', () => {
     const merged = mergeAppConfig(legacyConfig)
 
     expect(merged.remoteQuery).toEqual({ categoryId: '', requestTimeoutMs: 1_500 })
-    expect(merged.capture).toEqual(legacyConfig.capture)
+    expect(merged.capture).toEqual({
+      ...legacyConfig.capture,
+      regionCoordinateSpace: null,
+    })
     expect(merged.ocr).toEqual(legacyConfig.ocr)
     expect(merged.matcher).toEqual(legacyConfig.matcher)
     expect(merged.overlay).toEqual(legacyConfig.overlay)
+  })
+
+  it('只有视频像素坐标中的完整区域才视为有效校准', async () => {
+    vi.stubGlobal('window', { devicePixelRatio: 2 })
+    const { hasValidCaptureRegions, mergeAppConfig } = await import('./config')
+    const config = mergeAppConfig({
+      capture: {
+        questionRegion: { x: 1, y: 2, width: 300, height: 80 },
+        optionsRegion: { x: 1, y: 100, width: 300, height: 160 },
+        regionCoordinateSpace: 'video-pixel-v1',
+      },
+    })
+
+    expect(hasValidCaptureRegions(config.capture)).toBe(true)
+    expect(hasValidCaptureRegions({ ...config.capture, regionCoordinateSpace: null })).toBe(false)
   })
 
   it('响应式默认配置可合并为能安全克隆的独立普通配置', async () => {

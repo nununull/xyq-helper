@@ -10,6 +10,7 @@
     "merge:questions": "node scripts/merge-questions.mjs",
     "build:index": "node scripts/build-index.mjs",
     "build:db": "node scripts/build-db.mjs",
+    "sync:categories": "node scripts/sync-175dt-categories.mjs",
     "preview": "vite preview --host 0.0.0.0",
     "test": "vitest",
     "test:run": "vitest run"

@@ -1,5 +1,5 @@
 /**
- * 屏幕上的矩形区域，坐标基于捕获画面的 CSS 像素。
+ * 屏幕上的矩形区域，坐标基于共享视频的原始像素。
  */
 export interface CaptureRegion {
   x: number
@@ -14,6 +14,7 @@ export interface CaptureRegion {
 export interface CaptureConfig {
   questionRegion: CaptureRegion | null
   optionsRegion: CaptureRegion | null
+  regionCoordinateSpace: 'video-pixel-v1' | null
   devicePixelRatio: number
   captureFps: number
 }

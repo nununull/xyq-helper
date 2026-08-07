@@ -135,6 +135,7 @@ describe('屏幕捕获结束监听', () => {
     expect(capture.captureCurrentFrame({
       questionRegion: null,
       optionsRegion: null,
+      regionCoordinateSpace: null,
       devicePixelRatio: 1,
       captureFps: 2,
     })).toBeNull()
@@ -192,6 +193,7 @@ describe('屏幕捕获结束监听', () => {
       expect(capture.captureCurrentFrame({
         questionRegion: null,
         optionsRegion: null,
+        regionCoordinateSpace: null,
         devicePixelRatio: 1,
         captureFps: 2,
       })).toBeNull()
@@ -205,5 +207,20 @@ describe('屏幕捕获结束监听', () => {
 
     expect(listener).toHaveBeenCalledTimes(1)
     expect(track.stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('授权成功后向预览层暴露当前共享流，停止后清空', async () => {
+    const { stream } = createTrackAndStream()
+    vi.stubGlobal('navigator', {
+      mediaDevices: { getDisplayMedia: vi.fn().mockResolvedValue(stream) },
+    })
+    stubVideoElements()
+    const capture = useScreenCapture()
+
+    await capture.startCapture()
+    expect(capture.getActiveStream()).toBe(stream)
+
+    capture.stopCapture()
+    expect(capture.getActiveStream()).toBeNull()
   })
 })

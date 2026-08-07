@@ -133,7 +133,7 @@ button:disabled {
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 180px minmax(520px, 1fr) 300px;
+  grid-template-columns: 230px minmax(500px, 1fr) 300px;
   gap: 12px;
   padding: 12px;
 }
@@ -278,4 +278,121 @@ pre {
 
 .success-text {
   color: var(--success);
+}
+
+.category-sidebar {
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  gap: 12px;
+  overflow: hidden;
+}
+
+.category-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.category-title-row h2 {
+  margin: 0;
+}
+
+.category-title-row span,
+.category-group h3 span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.category-search-label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.category-search {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 8px 10px;
+  background: var(--panel-strong);
+  color: var(--text);
+}
+
+.category-list {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.category-group {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.category-group h3 {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0;
+  padding: 6px 2px;
+  background: var(--panel);
+  color: var(--primary);
+  font-size: 14px;
+}
+
+.category-button {
+  width: 100%;
+  text-align: left;
+}
+
+.flow-hint {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.calibration-panel {
+  padding: 16px;
+}
+
+.calibration-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.calibration-header p {
+  margin: 0 0 12px;
+  color: var(--primary);
+}
+
+.calibration-stage {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  cursor: crosshair;
+  user-select: none;
+  touch-action: none;
+  background: #000;
+}
+
+.calibration-stage video {
+  display: block;
+  width: 100%;
+  height: auto;
+  pointer-events: none;
+}
+
+.calibration-selection {
+  position: absolute;
+  border: 2px solid var(--success);
+  background: rgb(0 255 136 / 16%);
+  pointer-events: none;
 }

@@ -92,16 +92,16 @@ Vue3 SPA
 
 ## 5. 核心模块设计
 
-### 5.1 设置向导模块
+### 5.1 共享预览校准模块
 
-设置向导负责完成首次使用所需的基础配置。
+校准模块在用户授权共享游戏窗口后显示实时预览，并在预览内完成首次配置或重新校准。
 
 主要能力：
 
-- 框选题干区域。
-- 框选选项区域。
-- 每完成一步就把普通配置对象保存到 IndexedDB，避免响应式代理进入浏览器存储。
-- 两个区域齐备后进入主控制台；屏幕/窗口授权在用户点击“开始连续识别”时进行。
+- 在共享视频预览中框选题干区域。
+- 在同一预览中框选选项区域。
+- 将预览 CSS 坐标换算为共享视频原始像素坐标。
+- 两个区域一次性保存到 IndexedDB，随后自动开始连续识别。
 
 配置数据结构：
 
@@ -116,6 +116,7 @@ export interface CaptureRegion {
 export interface CaptureConfig {
   questionRegion: CaptureRegion | null
   optionsRegion: CaptureRegion | null
+  regionCoordinateSpace: 'video-pixel-v1' | null
   devicePixelRatio: number
   captureFps: number
 }
@@ -123,9 +124,10 @@ export interface CaptureConfig {
 
 设计要求：
 
-- 区域坐标必须记录当时的 `devicePixelRatio`，避免 Windows 缩放导致裁剪错位。
-- 当前向导按“准备 → 题干 → 选项”推进；两个区域未齐备时不会进入主控制台。
-- 当前设置面板没有重新框选入口；需要重新配置时应清理本地配置后重新进入向导。
+- 区域坐标以共享视频原始像素为准，裁剪时不再乘浏览器 `devicePixelRatio`。
+- 主控制台始终可进入；用户先选分类，再连接游戏画面并完成“题干 → 选项”校准。
+- 主控制台提供“重新校准”入口，校准期间保留共享流但暂停识别。
+- 旧版网页坐标没有 `video-pixel-v1` 标记，升级后必须重新校准。
 
 ### 5.2 屏幕捕获模块
 
@@ -417,7 +419,7 @@ export interface AnswerOverlayState {
 左栏：
 
 - 活动分类单选列表。
-- 未选择分类时禁用“开始连续识别”；切换分类会停止捕获、清空旧上下文并持久化新选择。
+- 未选择分类时禁用“连接游戏画面”并展示原因；切换分类会停止捕获、清空旧上下文并持久化新选择。
 
 中栏：
 
@@ -456,12 +458,12 @@ export interface AnswerOverlayState {
 ```text
 打开工具
 → 检查 IndexedDB 配置
-→ 无配置则进入设置向导
-→ 框选题干区域
-→ 框选选项区域
 → 进入主控制台
 → 选择活动分类
-→ 用户点击开始并授权屏幕捕获
+→ 用户点击连接并授权共享游戏窗口
+→ 页面显示共享视频实时预览
+→ 未校准时依次框选题干和选项区域
+→ 保存视频像素区域并开始连续识别
 → 初始化或复用 OCR Worker
 ```
 

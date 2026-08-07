@@ -92,6 +92,11 @@ export function useScreenCapture() {
     return () => captureEndedListeners.delete(listener)
   }
 
+  /** 返回当前仍然有效的共享流，供预览组件绑定视频元素。 */
+  function getActiveStream(): MediaStream | null {
+    return mediaStream
+  }
+
   /** 按配置区域裁剪当前视频帧。 */
   function captureCurrentFrame(config: CaptureConfig): CaptureFrame | null {
     if (!videoElement || !config.questionRegion || !config.optionsRegion) {
@@ -108,8 +113,8 @@ export function useScreenCapture() {
 
     sourceContext.drawImage(videoElement, 0, 0, sourceCanvas.width, sourceCanvas.height)
 
-    const questionImage = cropRegion(sourceContext, config.questionRegion, config.devicePixelRatio)
-    const optionsImage = cropRegion(sourceContext, config.optionsRegion, config.devicePixelRatio)
+    const questionImage = cropRegion(sourceContext, config.questionRegion)
+    const optionsImage = cropRegion(sourceContext, config.optionsRegion)
 
     return {
       questionImage,
@@ -123,6 +128,7 @@ export function useScreenCapture() {
     startCapture,
     stopCapture,
     onCaptureEnded,
+    getActiveStream,
     captureCurrentFrame,
   }
 }
@@ -131,13 +137,11 @@ export function useScreenCapture() {
 function cropRegion(
   sourceContext: CanvasRenderingContext2D,
   region: CaptureRegion,
-  devicePixelRatio: number,
 ): ImageData {
-  const scale = devicePixelRatio || 1
   return sourceContext.getImageData(
-    Math.round(region.x * scale),
-    Math.round(region.y * scale),
-    Math.round(region.width * scale),
-    Math.round(region.height * scale),
+    Math.round(region.x),
+    Math.round(region.y),
+    Math.round(region.width),
+    Math.round(region.height),
   )
 }
