@@ -10,6 +10,7 @@ const questionScaffolds = [
   '哪位', '哪些', '什么', '正确', '错误', '属于', '说法', '称为', '如何',
   '是否', '中', '的', '是', '吗',
 ]
+const searchTokenPattern = /[a-z0-9]+(?:[._+-][a-z0-9]+)*|[㐀-鿿]/giu
 
 export interface SimilarQuestionEntry<T> {
   normalizedQuestion: string
@@ -53,20 +54,37 @@ export function cleanRemoteQueryText(text: string): string {
 export function createCompactRemoteQueryText(text: string, maximumLength = 14): string {
   const cleaned = cleanRemoteQueryText(text)
   if (cleaned.length <= maximumLength) return cleaned
-  if (cleaned.length <= maximumLength * 2) return cleaned.slice(0, maximumLength)
+  if (cleaned.length <= maximumLength * 2) return takeSearchTokens(cleaned, maximumLength)
 
   const keyword = selectFallbackKeyword(cleaned)
-  return keyword ?? cleaned.slice(0, maximumLength)
+  return keyword ?? takeSearchTokens(cleaned, maximumLength)
 }
 
-/** 从高信息词的单字开始逐步扩展查询，避免一次发送整段低质量 OCR 文本。 */
+/** 优先发送完整高信息词，再按语义单元缩短；连续英文和数字始终作为一个整体。 */
 export function createProgressiveRemoteQueries(text: string, maximumLength = 8): string[] {
   const cleaned = cleanRemoteQueryText(text)
   const keyword = selectFallbackKeyword(cleaned)
   const seed = keyword ?? createCompactRemoteQueryText(cleaned, maximumLength)
-  const characters = [...seed].slice(0, maximumLength)
+  const tokens = tokenizeSearchText(seed).slice(0, maximumLength)
+  if (!tokens.length) return []
 
-  return characters.map((_, index) => characters.slice(0, index + 1).join(''))
+  const minimumLength = tokens.some((token) => /^[㐀-鿿]$/.test(token)) ? 2 : 1
+  const queries: string[] = []
+  for (let length = tokens.length; length >= Math.min(minimumLength, tokens.length); length -= 1) {
+    const query = tokens.slice(0, length).join('')
+    if (query && !queries.includes(query)) queries.push(query)
+  }
+  return queries
+}
+
+/** 将连续英文、数字及常见版本连接符合并为不可拆分的搜索单元。 */
+function tokenizeSearchText(text: string): string[] {
+  return text.match(searchTokenPattern) ?? []
+}
+
+/** 按搜索单元截断文本，避免从英文单词或连续数字中间切断。 */
+function takeSearchTokens(text: string, maximumLength: number): string {
+  return tokenizeSearchText(text).slice(0, maximumLength).join('')
 }
 
 /** 为分类内的标准化题干生成稳定且紧凑的本地缓存指纹。 */
@@ -103,7 +121,7 @@ function selectNaturalWord(text: string): string | null {
   const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' })
   const candidates = [...segmenter.segment(text)]
     .filter((item) => item.isWordLike)
-    .map((item) => item.segment.replace(/[^㐀-鿿0-9]/g, ''))
+    .map((item) => item.segment.replace(/[^\p{Script=Han}\p{L}\p{N}]/gu, ''))
     .filter((word) => isUsefulKeyword(word))
     .map((word, order) => ({
       word,
@@ -118,11 +136,11 @@ function selectNaturalWord(text: string): string | null {
 /** 按成对引号与书名号的优先级提取专有内容。 */
 function extractQuotedKeyword(text: string): string | null {
   const quotedPatterns = [
-    /“([^”]{2,8})”/,
-    /"([^"]{2,8})"/,
-    /《([^》]{2,8})》/,
-    /「([^」]{2,8})」/,
-    /『([^』]{2,8})』/,
+    /“([^”]{2,32})”/,
+    /"([^"]{2,32})"/,
+    /《([^》]{2,32})》/,
+    /「([^」]{2,32})」/,
+    /『([^』]{2,32})』/,
   ]
   for (const pattern of quotedPatterns) {
     const candidate = pattern.exec(text)?.[1]?.trim()
@@ -185,8 +203,11 @@ function selectHighInformationWindow(normalized: string): string | null {
 
 /** 过滤通用问句词和信息量不足的候选。 */
 function isUsefulKeyword(keyword: string): boolean {
+  const tokenCount = tokenizeSearchText(keyword).length
   return keyword.length >= 2
-    && keyword.length <= 8
+    && keyword.length <= 32
+    && tokenCount >= 1
+    && tokenCount <= 8
     && !genericWords.has(keyword)
     && ![...genericWords].some((word) => keyword.includes(word))
     && !questionScaffolds.includes(keyword)

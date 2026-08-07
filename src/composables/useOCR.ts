@@ -89,7 +89,12 @@ async function createPaddleEngine(): Promise<PaddleOCREngine> {
     throw new Error('PaddleOCR 模型不能通过 file:// 加载，请使用 npm run preview 或本地 HTTP 服务打开 dist')
   }
 
-  const { PaddleOCR } = await import('@paddleocr/paddleocr-js')
+  const [ort, { PaddleOCR }] = await Promise.all([
+    import('onnxruntime-web'),
+    import('@paddleocr/paddleocr-js'),
+  ])
+  // 模型内未使用的初始化器由 ORT 自动清理，仅隐藏不会影响推理结果的运行时警告。
+  ort.env.logLevel = 'error'
   return await PaddleOCR.create({
     // 官方 0.4.x Worker 在部分 Vite 构建中无法正确加载其模块资源，先使用稳定的主线程管线。
     worker: false,

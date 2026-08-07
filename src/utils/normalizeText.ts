@@ -3,11 +3,8 @@
  */
 export function normalizeQuestionText(text: string): string {
   return text
-    .replace(/[Ａ-Ｚａ-ｚ０-９]/g, (char) =>
-      String.fromCharCode(char.charCodeAt(0) - 0xfee0),
-    )
-    .replace(/[，。！？、；：“”‘’（）【】《》·,.!?;:"'()[\]<>]/g, '')
-    .replace(/\s+/g, '')
+    .normalize('NFKC')
+    .replace(/[^\p{Script=Han}\p{L}\p{N}]/gu, '')
     .toLowerCase()
 }
 

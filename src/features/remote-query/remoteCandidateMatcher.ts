@@ -1,6 +1,6 @@
 import type { ParsedQuestion } from '../../types/question'
 import type { RankedRemoteCandidate, RemoteQuestionCandidate } from '../../types/remoteQuestion'
-import { diceSimilarity } from '../../utils/normalizeText'
+import { diceSimilarity, normalizeQuestionText } from '../../utils/normalizeText'
 
 export interface RemoteMatchDecision {
   kind: 'confident' | 'lowConfidence' | 'ambiguous' | 'rejected'
@@ -52,9 +52,15 @@ export function inferRemoteAnswer(
 ): { answer: RankedRemoteCandidate['answer']; score: number } {
   let answer: RankedRemoteCandidate['answer'] = null
   let score = 0
+  // 175DT 的答案可能带空格、装饰符号和“参考答案”等前缀，比较前统一清理。
+  const normalizedAnswer = normalizeQuestionText(answerText)
+    .replace(/^(?:参考|正确)?答案(?:是|为)?/, '')
 
   for (const [key, optionText] of Object.entries(options)) {
-    const current = diceSimilarity(answerText, optionText ?? '')
+    const normalizedOption = normalizeQuestionText(optionText ?? '')
+    const current = normalizedOption && normalizedAnswer === normalizedOption
+      ? 1
+      : diceSimilarity(normalizedAnswer, normalizedOption)
     if (current > score) {
       answer = key as RankedRemoteCandidate['answer']
       score = current

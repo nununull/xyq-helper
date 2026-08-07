@@ -525,7 +525,7 @@ export function createRecognitionController(
         const phase = index === 0 ? 'primaryQuery' : 'fallbackQuery'
         recognitionStore.setPhase(
           phase,
-          `正在逐字查询 ${index + 1}/${queryTerms.length}：${queryText}`,
+          `正在查询 ${index + 1}/${queryTerms.length}：${queryText}`,
         )
         const result = await query(categoryId, queryText, {
           signal: requestController.signal,
