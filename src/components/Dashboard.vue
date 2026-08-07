@@ -4,6 +4,7 @@ import CaptureCalibration from './CaptureCalibration.vue'
 import CapturePreview from './CapturePreview.vue'
 import CategorySelector from './CategorySelector.vue'
 import OCRResult from './OCRResult.vue'
+import RecognitionResultPanel from './RecognitionResultPanel.vue'
 import SettingsPanel from './SettingsPanel.vue'
 import UnknownQuestions from './UnknownQuestions.vue'
 import { useOCR } from '../composables/useOCR'
@@ -45,13 +46,6 @@ const actionHint = computed(() => {
 const parsedQuestion = computed(() => (
   ocrStore.lastResult ? parseQuestion(ocrStore.lastResult) : null
 ))
-const matchedAnswerText = computed(() => {
-  const result = matcherStore.result
-  if (!result) return ''
-  const answerText = result.answerText?.trim()
-  if (answerText && answerText !== result.answer) return answerText
-  return result.answer ? (parsedQuestion.value?.options[result.answer] ?? '') : ''
-})
 
 /** 获取屏幕共享，并根据区域配置进入校准或连续识别。 */
 async function startCapture(): Promise<void> {
@@ -211,27 +205,19 @@ onBeforeUnmount(() => {
           v-else
           :stream="previewStream"
           :frame="captureStore.lastFrame"
+        />
+      </main>
+
+      <aside class="rightbar">
+        <RecognitionResultPanel
           :result="matcherStore.result"
           :candidates="matcherStore.remoteResults.length ? matcherStore.remoteResults : matcherStore.remoteCandidates"
           :recognition-message="recognitionStore.message"
           :recognized-question="parsedQuestion?.questionText ?? ''"
-          :options-region="configStore.config.capture.optionsRegion"
-          :ocr-result="ocrStore.lastResult"
-          :ocr-scale="configStore.config.ocr.scale"
+          :parsed-question="parsedQuestion"
           @select-candidate="selectRemoteCandidate"
         />
         <OCRResult :result="ocrStore.lastResult" :parsed="parsedQuestion" />
-        <section class="panel">
-          <h2>匹配结果</h2>
-          <p v-if="!matcherStore.result" class="muted">暂无可靠答案。</p>
-          <article v-else class="matched-question-answer-pair">
-            <p><span>题目</span>{{ matcherStore.result.matchedQuestion }}</p>
-            <p class="matched-answer-text"><span>答案</span>{{ matchedAnswerText || '暂无答案文本' }}</p>
-          </article>
-        </section>
-      </main>
-
-      <aside class="rightbar">
         <section class="panel">
           <h2>状态</h2>
           <p>阶段：{{ recognitionStore.message }}</p>

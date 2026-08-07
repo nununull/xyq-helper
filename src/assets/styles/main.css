@@ -167,6 +167,18 @@ button:disabled {
   min-width: 0;
 }
 
+.rightbar .ocr-grid {
+  grid-template-columns: 1fr;
+}
+
+.rightbar pre {
+  min-height: 0;
+  max-height: 120px;
+  margin: 6px 0;
+  overflow: auto;
+  font-size: 11px;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -383,30 +395,9 @@ pre {
   height: auto;
 }
 
-.preview-answer-board {
-  width: 100%;
-  max-height: 240px;
-  margin-top: 8px;
+.recognition-result-panel {
+  max-height: 42vh;
   overflow-y: auto;
-  border: 1px solid rgb(0 255 136 / 72%);
-  border-radius: 6px;
-  padding: 8px 10px;
-  background: rgb(8 19 15 / 90%);
-  box-shadow: 0 8px 28px rgb(0 0 0 / 38%);
-  backdrop-filter: blur(4px);
-}
-
-.preview-answer-board.empty {
-  border-color: rgb(0 212 255 / 55%);
-  background: rgb(8 18 24 / 82%);
-}
-
-.preview-answer-title {
-  margin-bottom: 8px;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
 }
 
 .preview-answer-value,
@@ -417,8 +408,7 @@ pre {
   gap: 12px;
 }
 
-.preview-question-answer-pair,
-.matched-question-answer-pair {
+.preview-question-answer-pair {
   padding: 7px 8px;
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 4px;
@@ -426,21 +416,16 @@ pre {
 }
 
 .preview-pair-label,
-.matched-question-answer-pair p > span:first-child {
+.preview-question-answer-pair p > span:first-child {
   margin-right: 6px;
   color: var(--muted);
   font-size: 10px;
   font-weight: 700;
 }
 
-.preview-answer-board .preview-pair-label {
+.recognition-result-panel .preview-pair-label {
   color: var(--muted);
   font-size: 10px;
-}
-
-.matched-question-answer-pair p {
-  margin: 4px 0;
-  font-size: 12px;
 }
 
 .preview-answer-value strong {
@@ -456,8 +441,7 @@ pre {
 }
 
 .preview-matched-question,
-.preview-candidate-list p,
-.preview-answer-board.empty p {
+.preview-candidate-list p {
   color: var(--text);
   font-size: 12px;
   line-height: 1.4;
@@ -471,9 +455,6 @@ pre {
   margin: 0 0 6px;
 }
 
-.preview-answer-board.empty p {
-  margin: 8px 0 0;
-}
 
 .preview-candidate-list {
   display: grid;
@@ -495,12 +476,6 @@ pre {
   font-size: 12px;
 }
 
-.matched-answer-text {
-  color: var(--success);
-  font-size: 12px;
-  font-weight: 700;
-}
-
 .preview-candidate-list p {
   color: var(--muted);
 }
@@ -517,17 +492,6 @@ pre {
 .matched-keyword {
   color: #ff5b5b;
   font-weight: 700;
-}
-
-.preview-answer-box {
-  position: absolute;
-  z-index: 2;
-  border: 2px solid #35ff8b;
-  border-radius: 5px;
-  background: rgb(0 255 136 / 5%);
-  box-shadow: 0 0 0 1px rgb(0 0 0 / 55%), 0 0 10px rgb(0 255 136 / 45%);
-  font-weight: 800;
-  pointer-events: none;
 }
 
 .calibration-panel {
