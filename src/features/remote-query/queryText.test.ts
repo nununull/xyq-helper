@@ -15,6 +15,11 @@ describe('远程查询文本', () => {
       .toBe('唐代诗人中，被称为“诗鬼”的是谁？')
   })
 
+  it('清除中文字符间空格和误识别括号，生成可查询题干', () => {
+    expect(cleanRemoteQueryText('唐 卡 是 《〈) 富有 民族 特色 的 卷轴 画'))
+      .toBe('唐卡是富有民族特色的卷轴画')
+  })
+
   it('相同标准化题干生成相同指纹', () => {
     expect(createQuestionFingerprint('谁被称为诗鬼？'))
       .toBe(createQuestionFingerprint('谁 被称为“诗鬼”'))
@@ -46,6 +51,11 @@ describe('远程查询文本', () => {
 
   it('无引号长题干选择唯一的高信息窗口', () => {
     expect(selectFallbackKeyword('中国古代四大发明中最早用于航海定向的工具是什么？')).toBe('四大发明')
+  })
+
+  it('定义式题干优先使用主语作为降级关键词', () => {
+    expect(selectFallbackKeyword('唐 卡 是 《〈) 富有 民族 特色 的 卷轴 画'))
+      .toBe('唐卡')
   })
 
   it('不会选择通用问句词', () => {

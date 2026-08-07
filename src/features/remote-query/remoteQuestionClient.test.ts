@@ -40,6 +40,15 @@ describe('175DT 远程客户端', () => {
     await expect(queryRemoteQuestions('44', '诗鬼', { fetcher })).resolves.toEqual({ kind: 'empty', candidates: [] })
   })
 
+  it('把 175DT 的业务状态 404 识别为空结果', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ status: 404 }), { status: 200 }))
+
+    await expect(queryRemoteQuestions('44', '完整题干', { fetcher })).resolves.toEqual({
+      kind: 'empty',
+      candidates: [],
+    })
+  })
+
   it.each([403, 429])('把 %s 识别为限流', async (status) => {
     const fetcher = vi.fn(async () => new Response('', { status }))
     const result = await queryRemoteQuestions('44', '诗鬼', { fetcher })

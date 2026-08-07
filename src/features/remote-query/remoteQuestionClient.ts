@@ -36,6 +36,9 @@ export async function queryRemoteQuestions(
     }
 
     const payload: unknown = await response.json()
+    if (isRemoteEmptyPayload(payload)) {
+      return { kind: 'empty', candidates: [] }
+    }
     if (!isRemotePayload(payload)) {
       return { kind: 'malformedResponse', message: '远程接口格式发生变化' }
     }
@@ -69,6 +72,13 @@ export async function queryRemoteQuestions(
 interface RemotePayload {
   status: number
   hits: Array<{ q: string; a: string }>
+}
+
+/** 识别 175DT 使用 HTTP 200 包装的业务空结果。 */
+function isRemoteEmptyPayload(payload: unknown): boolean {
+  return Boolean(payload)
+    && typeof payload === 'object'
+    && (payload as { status?: unknown }).status === 404
 }
 
 /** 校验第三方接口的最小响应契约。 */

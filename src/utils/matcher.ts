@@ -51,7 +51,10 @@ export function matchQuestion(
     .map((question) => {
       const questionScore = diceSimilarity(parsed.normalizedQuestion, question.normalizedQuestion)
       const optionScore = diceSimilarity(parsed.normalizedOptions, question.normalizedOptions)
-      const confidence = questionScore * 0.75 + optionScore * 0.25
+      const hasStoredOptions = Object.values(question.options).some(Boolean)
+      const confidence = hasStoredOptions
+        ? questionScore * 0.75 + optionScore * 0.25
+        : questionScore
 
       return { question, questionScore, optionScore, confidence } satisfies MatchCandidate
     })
@@ -70,6 +73,7 @@ export function matchQuestion(
   return {
     questionId: best.question.id,
     answer,
+    answerText: best.question.answerText ?? parsed.options[answer],
     confidence: best.confidence,
     matchedQuestion: best.question.question,
     source: best.question.source,

@@ -26,6 +26,20 @@ export function parseQuestion(result: OCRResult): ParsedQuestion {
     }
   }
 
+  // 游戏只按颜色和行序显示选项时，使用纵向顺序补全 A-D 语义。
+  if (Object.keys(options).length === 0) {
+    const orderedLines = result.options.text
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    if (orderedLines.length >= 2 && orderedLines.length <= 4) {
+      const keys: AnswerOptionKey[] = ['A', 'B', 'C', 'D']
+      orderedLines.forEach((line, index) => {
+        options[keys[index]] = line
+      })
+    }
+  }
+
   const normalizedOptions = Object.entries(options)
     .map(([key, value]) => `${key}${normalizeQuestionText(value ?? '')}`)
     .join('')

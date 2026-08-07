@@ -42,6 +42,8 @@ export function cleanRemoteQueryText(text: string): string {
     .replace(/\r?\n+/g, ' ')
     .replace(/\s+[ABCD][.。:：、]\s*.*$/i, '')
     .replace(/[|丨¦]+/g, '')
+    .replace(/[《》〈〉（）()【】\[\]<>]+/g, '')
+    .replace(/([㐀-鿿])\s+(?=[㐀-鿿])/g, '$1')
     .replace(/\s+/g, ' ')
     .replace(/([，。！？；：]) /g, '$1')
     .trim()
@@ -91,6 +93,9 @@ function extractQuotedKeyword(text: string): string | null {
 
 /** 从无引号题干中提取人名、朝代或专名词组。 */
 function extractEntityKeyword(normalized: string): string | null {
+  const definitionSubject = normalized.match(/^([㐀-鿿]{2,6})(?=是|为|指)/)?.[1]
+  if (definitionSubject && isUsefulKeyword(definitionSubject)) return definitionSubject
+
   const roleName = normalized.match(
     /(?:诗人|词人|作家|文学家|书法家|画家|名将|科学家|发明家)([㐀-鿿]{2,4})(?=被|为|是|曾|创|撰|发|的|$)/,
   )?.[1]
@@ -143,5 +148,6 @@ function isUsefulKeyword(keyword: string): boolean {
   return keyword.length >= 2
     && keyword.length <= 8
     && !genericWords.has(keyword)
+    && ![...genericWords].some((word) => keyword.includes(word))
     && !questionScaffolds.includes(keyword)
 }

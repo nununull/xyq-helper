@@ -74,6 +74,7 @@ interface Harness {
   captureFrame: ReturnType<typeof vi.fn<RecognitionControllerDependencies['captureFrame']>>
   recognizeFrame: ReturnType<typeof vi.fn<RecognitionControllerDependencies['recognizeFrame']>>
   query: ReturnType<typeof vi.fn<RecognitionControllerDependencies['query']>>
+  searchLocal: ReturnType<typeof vi.fn<RecognitionControllerDependencies['searchLocal']>>
   readCache: ReturnType<typeof vi.fn<RecognitionControllerDependencies['readCache']>>
   writeCache: ReturnType<typeof vi.fn<RecognitionControllerDependencies['writeCache']>>
   ocrPresentation: {
@@ -93,7 +94,7 @@ interface Harness {
     lastCompletedFingerprint: string | null
     lastCompletedQuestion: string | null
     cacheGeneration: number
-    resultSource: 'cache' | 'remote' | null
+    resultSource: 'local' | 'cache' | 'remote' | null
     durationMs: number | null
   }
   /** 放行一个由测试控制的轮询等待。 */
@@ -104,6 +105,7 @@ interface Harness {
 function createHarness(options: {
   frames?: CaptureFrame[]
   query?: RecognitionControllerDependencies['query']
+  searchLocal?: RecognitionControllerDependencies['searchLocal']
   readCache?: RecognitionControllerDependencies['readCache']
   writeCache?: RecognitionControllerDependencies['writeCache']
   recognizeFrame?: RecognitionControllerDependencies['recognizeFrame']
@@ -123,7 +125,7 @@ function createHarness(options: {
     lastCompletedFingerprint: null as string | null,
     lastCompletedQuestion: null as string | null,
     cacheGeneration: 0,
-    resultSource: null as 'cache' | 'remote' | null,
+    resultSource: null as 'local' | 'cache' | 'remote' | null,
     durationMs: null as number | null,
   }
   const captureFrame = vi.fn<RecognitionControllerDependencies['captureFrame']>(
@@ -134,6 +136,9 @@ function createHarness(options: {
   )
   const query = vi.fn<RecognitionControllerDependencies['query']>(
     options.query ?? (async () => successfulQuery()),
+  )
+  const searchLocal = vi.fn<RecognitionControllerDependencies['searchLocal']>(
+    options.searchLocal ?? (() => null),
   )
   const readCache = vi.fn<RecognitionControllerDependencies['readCache']>(
     options.readCache ?? (async () => undefined),
@@ -150,6 +155,7 @@ function createHarness(options: {
   const controller = createRecognitionController({
     captureFrame,
     recognizeFrame,
+    searchLocal,
     query,
     sleep: async () => await new Promise<void>((resolve) => sleepResolvers.push(resolve)),
     readCache,
@@ -223,6 +229,7 @@ function createHarness(options: {
     captureFrame,
     recognizeFrame,
     query,
+    searchLocal,
     readCache,
     writeCache,
     ocrPresentation,
@@ -332,6 +339,34 @@ describe('串行连续识别控制器', () => {
     expect(harness.query).not.toHaveBeenCalled()
     expect(harness.writeCache).toHaveBeenCalledWith(expect.objectContaining({ hitCount: 2 }))
     expect(harness.matcher.result).toMatchObject({ answer: 'C', resultSource: 'cache' })
+  })
+
+  it('网易本地题库命中时直接发布答案且不调用 175DT', async () => {
+    const harness = createHarness({
+      frames: [frame('one'), frame('two')],
+      searchLocal: () => ({
+        questionId: 88,
+        answer: 'C',
+        answerText: '李贺',
+        confidence: 0.98,
+        matchedQuestion: questionText,
+        source: 'netease',
+        resultSource: 'local',
+        category: '网易官方题库',
+        candidates: [],
+      }),
+    })
+
+    harness.controller.start()
+    await waitForCapturedFrames(harness, 1)
+    await advanceFrame(harness, 2)
+    await vi.waitFor(() => expect(harness.matcher.result).not.toBeNull())
+    harness.controller.stop()
+
+    expect(harness.searchLocal).toHaveBeenCalledTimes(1)
+    expect(harness.query).not.toHaveBeenCalled()
+    expect(harness.writeCache).toHaveBeenCalledWith(expect.objectContaining({ source: 'netease' }))
+    expect(harness.matcher.result).toMatchObject({ answer: 'C', resultSource: 'local' })
   })
 
   it('缓存 generation 变化后 stop/restart 同题不复用或写回旧内存快照', async () => {

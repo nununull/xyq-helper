@@ -13,7 +13,7 @@ export interface ActivityCategoryGroup {
 export interface RemoteQuestionCandidate {
   question: string
   answerText: string
-  source: '175dt'
+  source: 'netease' | '175dt'
 }
 
 export type RemoteQueryFailureKind =
@@ -67,6 +67,7 @@ export type RecognitionPhase =
   | 'recognizing'
   | 'stabilizing'
   | 'cacheLookup'
+  | 'localLookup'
   | 'primaryQuery'
   | 'fallbackQuery'
   | 'matching'

@@ -6,6 +6,7 @@ import {
 import { useScreenCapture } from '../../composables/useScreenCapture'
 import { useCaptureStore } from '../../stores/capture'
 import { useConfigStore } from '../../stores/config'
+import { useDBStore } from '../../stores/db'
 import { useMatcherStore } from '../../stores/matcher'
 import { useOCRStore } from '../../stores/ocr'
 import { useRecognitionStore } from '../../stores/recognition'
@@ -21,6 +22,7 @@ import type {
   RemoteQuestionCache,
 } from '../../types/remoteQuestion'
 import { parseQuestion } from '../../utils/parseQuestion'
+import { matchQuestion } from '../../utils/matcher'
 import {
   cleanRemoteQueryText,
   createQuestionFingerprint,
@@ -54,7 +56,7 @@ interface RecognitionStorePort {
   /** 记录最近完成的标准化题干。 */
   setLastCompletedQuestion(question: string | null): void
   /** 记录本次答案来源与求解耗时。 */
-  setOutcome(resultSource: 'cache' | 'remote', durationMs: number): void
+  setOutcome(resultSource: 'local' | 'cache' | 'remote', durationMs: number): void
 }
 
 interface MatcherStorePort {
@@ -104,6 +106,8 @@ export interface RecognitionControllerDependencies {
   recognizeFrame(frame: CaptureFrame): Promise<OCRResult>
   /** 查询指定活动分类的远程题库。 */
   query(categoryId: string, queryText: string, options: RemoteQueryOptions): Promise<RemoteQueryResult>
+  /** 使用已加载的内置题库匹配当前题目。 */
+  searchLocal(parsed: ParsedQuestion): MatchResult | null
   /** 等待下一次轮询间隔。 */
   sleep(durationMs: number): Promise<void>
   /** 按分类和题目指纹读取缓存。 */
@@ -139,6 +143,7 @@ export function createRecognitionController(
   const {
     captureFrame,
     recognizeFrame,
+    searchLocal,
     query,
     sleep,
     readCache,
@@ -322,6 +327,47 @@ export function createRecognitionController(
     recognitionStore.setPhase('showingAnswer', '已从本地缓存找到答案')
   }
 
+  /** 发布本地题库答案并写入统一缓存，后续相同题目无需重复匹配。 */
+  async function publishLocalResult(
+    result: MatchResult,
+    parsed: ParsedQuestion,
+    startedAt: number,
+  ): Promise<void> {
+    const context = solveContexts.get(parsed)
+    if (!context || !canPublish(context)) return
+    const answerText = result.answerText ?? (result.answer ? parsed.options[result.answer] : undefined)
+    if (!answerText) return
+
+    const cachedAt = now()
+    const cacheRecord: RemoteQuestionCache = {
+      id: `${context.categoryId}:${context.fingerprint}`,
+      categoryId: context.categoryId,
+      questionFingerprint: context.fingerprint,
+      recognizedQuestion: parsed.questionText,
+      matchedQuestion: result.matchedQuestion,
+      answerText,
+      source: result.source,
+      matchConfidence: result.confidence,
+      createdAt: cachedAt,
+      lastUsedAt: cachedAt,
+      hitCount: 1,
+    }
+    await writeCache(cacheRecord)
+    if (!canPublish(context)) return
+
+    const durationMs = Math.max(0, Math.round(performance.now() - startedAt))
+    matcherStore.setResult({ ...result, resultSource: 'local', durationMs })
+    recognitionStore.setOutcome('local', durationMs)
+    recognitionStore.setLastCompletedFingerprint(context.fingerprint)
+    recognitionStore.setLastCompletedQuestion(parsed.normalizedQuestion)
+    lastCompletedCache = {
+      normalizedQuestion: parsed.normalizedQuestion,
+      value: cacheRecord,
+    }
+    snapshotRetryPending = false
+    recognitionStore.setPhase('showingAnswer', '已从网易官方本地题库找到答案')
+  }
+
   /** 发布候选决策；仅 confident 和 lowConfidence 写入成功缓存。 */
   async function publishDecision(
     decision: RemoteMatchDecision,
@@ -450,6 +496,13 @@ export function createRecognitionController(
         return
       }
       if (fingerprint === recognitionStore.lastCompletedFingerprint) return
+
+      recognitionStore.setPhase('localLookup', '正在查询网易官方本地题库')
+      const localResult = searchLocal(parsed)
+      if (localResult) {
+        await publishLocalResult(localResult, parsed, startedAt)
+        return
+      }
 
       recognitionStore.setPhase('primaryQuery', '正在查询远程题库')
       const primary = await query(categoryId, cleanRemoteQueryText(parsed.questionText), {
@@ -683,6 +736,7 @@ export function createRecognitionController(
 export function useRecognitionController(): RecognitionController {
   const captureStore = useCaptureStore()
   const configStore = useConfigStore()
+  const dbStore = useDBStore()
   const matcherStore = useMatcherStore()
   const ocrStore = useOCRStore()
   const recognitionStore = useRecognitionStore()
@@ -697,6 +751,12 @@ export function useRecognitionController(): RecognitionController {
   return createRecognitionController({
     captureFrame: runtimeAdapters.captureFrame,
     recognizeFrame,
+    searchLocal: (parsed) => matchQuestion(
+      parsed,
+      dbStore.questions,
+      0.82,
+      dbStore.trigramIndex,
+    ),
     query: queryRemoteQuestions,
     sleep: async (durationMs) => await new Promise((resolve) => setTimeout(resolve, durationMs)),
     readCache: getRemoteQuestionCache,

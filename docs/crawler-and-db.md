@@ -1,9 +1,10 @@
-# 175DT 爬虫与题库构建说明
+# 网易官方题库、175DT 与本地索引构建说明
 
 ## 当前状态
 
-已实现四个脚本：
+已实现五个脚本：
 
+- `scripts/sync-netease-questions.mjs`：发现网易官方题库的 webpack 分包，提取 `Q/A` 并生成标准 JSONL。
 - `crawler/175dt-crawler.mjs`：抓取 175DT 分类导航，并输出标准 JSONL 题库文件。
 - `scripts/merge-questions.mjs`：合并多个平台的 JSONL，按内容 hash 去重并合并来源。
 - `scripts/build-index.mjs`：读取 JSONL，清洗去重，生成 `public/data/questions.json`、`public/data/trigram-index.json` 和 `public/data/version.json`。
@@ -11,13 +12,13 @@
 
 ## 运行时使用方式
 
-普通用户运行当前前端时不需要先执行爬虫、合并脚本或本地题库构建。用户在主控制台选择活动分类并开始连续识别后，运行时会先按“分类 ID + 标准化题目指纹”查询 IndexedDB 成功缓存；缓存未命中时直接调用 175DT 搜索接口。完整题干没有候选时只会再使用一个回退关键词查询一次。
+普通用户运行当前前端时不需要先执行同步、爬虫、合并或索引构建脚本。用户开始连续识别后，运行时依次查询 IndexedDB 成功缓存、内置网易官方题库和 175DT 搜索接口。完整题干在 175DT 没有候选时只会再使用一个回退关键词查询一次。
 
 远程结果返回的是答案文本，前端会根据当前 OCR 选项重新推导 A/B/C/D；成功结果写入 IndexedDB，刷新页面后可以继续复用。远程查询失败不会写入成功缓存：普通失败对当前题目冷却 10 秒，手动重试可绕过该冷却；HTTP 403/429 对当前分类冷却 60 秒。
 
 由于前端静态页面与 `s.175dt.com` 跨源，正常使用远程查询需要用户在浏览器安装并启用允许该目标站请求的 CORS 扩展。未启用、网络中断或跨域请求被拦截时，界面会显示“可能是 CORS 或网络错误”。
 
-本文后续命令继续保留，用于离线数据集维护、增量抓取、来源合并、JSON trigram 索引生成和 SQLite 备用产物构建。它们是维护工具和可选离线能力，不是普通用户启动应用的前置步骤，也不是当前生产运行时的默认查询链路。
+本文后续命令用于网易题库同步、175DT 增量抓取、来源合并、JSON trigram 索引生成和 SQLite 备用产物构建。它们是维护工具，不是普通用户启动应用的前置步骤。
 
 ## 重要限制
 
@@ -56,6 +57,18 @@ https://s.175dt.com/?id=44&kw=隋朝&c=10000
 - 多来源答案交叉校验。
 
 ## 使用命令
+
+同步网易官方题库：
+
+```powershell
+npm run sync:netease
+```
+
+同步网易题库、合并全部来源并重建前端索引：
+
+```powershell
+npm run refresh:questions
+```
 
 抓取分类并生成空 JSONL：
 
@@ -135,7 +148,7 @@ node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝 --expand true --rounds 3 --d
 node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝 --state data/raw/manual-rerun.state.json
 ```
 
-如果需要把当前 JSONL 重新清洗排序，执行：
+如果需要把网易官方题库与当前 175DT JSONL 重新清洗、合并和排序，执行：
 
 ```powershell
 npm run merge:questions
@@ -168,7 +181,7 @@ npm run build:db
 指定输入输出：
 
 ```powershell
-node scripts/build-index.mjs --input data/raw/questions.jsonl --questions public/data/questions.json --index public/data/trigram-index.json --version public/data/version.json
+node scripts/build-index.mjs --input data/merged/questions.jsonl --questions public/data/questions.json --index public/data/trigram-index.json --version public/data/version.json
 ```
 
 ## JSONL 格式
@@ -226,7 +239,7 @@ node crawler/175dt-crawler.mjs --ids 44 --kw 隋朝 --expand true --rounds 3 --m
 
 ## JSON trigram 索引策略（可选离线能力）
 
-构建链路可以生成 JSON + trigram 倒排索引，供离线数据维护或未来显式回退使用，不依赖浏览器端 SQLite FTS5。当前生产运行时默认采用“IndexedDB 成功缓存 → 175DT 远程查询”，不会强制下载这些 JSON 产物。
+构建链路生成 JSON + trigram 倒排索引，不依赖浏览器端 SQLite FTS5。当前生产运行时采用“IndexedDB 成功缓存 → 网易官方本地索引 → 175DT 远程查询”。
 
 构建输出：
 
