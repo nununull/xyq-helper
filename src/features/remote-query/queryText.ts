@@ -59,6 +59,16 @@ export function createCompactRemoteQueryText(text: string, maximumLength = 14): 
   return keyword ?? cleaned.slice(0, maximumLength)
 }
 
+/** 从高信息词的单字开始逐步扩展查询，避免一次发送整段低质量 OCR 文本。 */
+export function createProgressiveRemoteQueries(text: string, maximumLength = 8): string[] {
+  const cleaned = cleanRemoteQueryText(text)
+  const keyword = selectFallbackKeyword(cleaned)
+  const seed = keyword ?? createCompactRemoteQueryText(cleaned, maximumLength)
+  const characters = [...seed].slice(0, maximumLength)
+
+  return characters.map((_, index) => characters.slice(0, index + 1).join(''))
+}
+
 /** 为分类内的标准化题干生成稳定且紧凑的本地缓存指纹。 */
 export function createQuestionFingerprint(text: string): string {
   const normalized = normalizeQuestionText(text)

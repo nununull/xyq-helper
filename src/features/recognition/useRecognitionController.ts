@@ -19,16 +19,14 @@ import type {
   RemoteAmbiguousCandidate,
   RemoteQueryOptions,
   RemoteQueryResult,
-  RemoteQuestionCandidate,
   RemoteQuestionCache,
 } from '../../types/remoteQuestion'
 import { parseQuestion } from '../../utils/parseQuestion'
 import { findLikelyQuestionText, matchQuestion } from '../../utils/matcher'
 import {
-  createCompactRemoteQueryText,
+  createProgressiveRemoteQueries,
   createQuestionFingerprint,
   findSimilarQuestionEntry,
-  selectFallbackKeyword,
   type SimilarQuestionEntry,
 } from '../remote-query/queryText'
 import {
@@ -65,6 +63,8 @@ interface MatcherStorePort {
   setResult(result: MatchResult | null): void
   /** 发布或清空远程歧义候选。 */
   setRemoteCandidates(candidates: RemoteAmbiguousCandidate[]): void
+  /** 发布远程接口返回的人工备选列表。 */
+  setRemoteResults?(candidates: RemoteAmbiguousCandidate[]): void
   /** 发布或清空当前匹配错误。 */
   setError(error: string): void
   /** 清空当前匹配上下文。 */
@@ -135,6 +135,8 @@ export interface RecognitionController {
   stop(): void
   /** 绕过当前题目冷却并立即重试。 */
   retry(): Promise<void>
+  /** 接受用户人工选择的远程候选并缓存结果。 */
+  selectCandidate(candidate: RemoteAmbiguousCandidate, parsed: ParsedQuestion): Promise<void>
   /** 为新的活动分类重置识别上下文。 */
   resetForCategory(): void
 }
@@ -515,44 +517,39 @@ export function createRecognitionController(
 
       const correctedQuestion = correctRemoteQuery?.(parsed)
       const querySourceText = correctedQuestion ?? parsed.questionText
-      const primaryQueryText = createCompactRemoteQueryText(querySourceText)
-      recognitionStore.setPhase('primaryQuery', `正在查询远程题库：${primaryQueryText}`)
-      const primary = await query(categoryId, primaryQueryText, {
-        signal: requestController.signal,
-        timeoutMs: getRequestTimeoutMs(),
-      })
-      if (!canPublish(context)) return
-      let candidates = primary.kind === 'success' ? primary.candidates : []
+      const queryTerms = createProgressiveRemoteQueries(querySourceText)
+      let decision: RemoteMatchDecision = rankRemoteCandidates(parsed, [], ocrConfidence)
+      matcherStore.setRemoteResults?.([])
 
-      if (primary.kind === 'success' || primary.kind === 'empty') {
-        let decision = rankRemoteCandidates(parsed, candidates, ocrConfidence)
-        const fallback = selectFallbackKeyword(querySourceText)
-        const shouldRetryWithKeyword = fallback
-          && fallback !== primaryQueryText
-          && (primary.kind === 'empty'
-            || decision.kind === 'rejected')
-
-        if (shouldRetryWithKeyword) {
-          recognitionStore.setPhase('fallbackQuery', `正在使用关键词重试：${fallback}`)
-          const secondary = await query(categoryId, fallback, {
-            signal: requestController.signal,
-            timeoutMs: getRequestTimeoutMs(),
-          })
-          if (!canPublish(context)) return
-          if (secondary.kind === 'success') {
-            candidates = mergeRemoteCandidates(candidates, secondary.candidates)
-            decision = rankRemoteCandidates(parsed, candidates, ocrConfidence)
-          }
-          else if (secondary.kind !== 'empty') return publishFailure(secondary)
+      for (const [index, queryText] of queryTerms.entries()) {
+        const phase = index === 0 ? 'primaryQuery' : 'fallbackQuery'
+        recognitionStore.setPhase(
+          phase,
+          `正在逐字查询 ${index + 1}/${queryTerms.length}：${queryText}`,
+        )
+        const result = await query(categoryId, queryText, {
+          signal: requestController.signal,
+          timeoutMs: getRequestTimeoutMs(),
+        })
+        if (!canPublish(context)) return
+        if (result.kind !== 'success' && result.kind !== 'empty') {
+          publishFailure(result)
+          return
         }
+        if (result.kind === 'empty') continue
 
-        recognitionStore.setPhase('matching', '正在匹配候选题')
-        await publishDecision(decision, categoryId, fingerprint, parsed, startedAt)
-        return
-      } else {
-        publishFailure(primary)
-        return
+        decision = rankRemoteCandidates(parsed, result.candidates, ocrConfidence)
+        matcherStore.setRemoteResults?.(decision.candidates.slice(0, 10).map((candidate) => ({
+          question: candidate.question,
+          answerText: candidate.answerText,
+          confidence: candidate.confidence,
+        })))
+        if (decision.kind !== 'rejected') break
       }
+
+      recognitionStore.setPhase('matching', '正在匹配候选题')
+      await publishDecision(decision, categoryId, fingerprint, parsed, startedAt)
+      return
     } catch (error) {
       if (canPublish(context)) {
         matcherStore.setRemoteCandidates([])
@@ -738,6 +735,58 @@ export function createRecognitionController(
       await enqueueFrame()
     },
 
+    /** 接受人工候选、推导当前选项字母并写入本地缓存。 */
+    async selectCandidate(
+      candidate: RemoteAmbiguousCandidate,
+      parsed: ParsedQuestion,
+    ): Promise<void> {
+      const categoryId = getCategoryId()
+      if (!categoryId) return
+      invalidateActiveSolve()
+      const fingerprint = createQuestionFingerprint(parsed.normalizedQuestion)
+      const inferred = inferRemoteAnswer(candidate.answerText, parsed.options)
+      const cachedAt = now()
+      const cacheRecord: RemoteQuestionCache = {
+        id: `${categoryId}:${fingerprint}`,
+        categoryId,
+        questionFingerprint: fingerprint,
+        recognizedQuestion: parsed.questionText,
+        matchedQuestion: candidate.question,
+        answerText: candidate.answerText,
+        source: '175dt-manual',
+        matchConfidence: candidate.confidence,
+        createdAt: cachedAt,
+        lastUsedAt: cachedAt,
+        hitCount: 1,
+      }
+      await writeCache(cacheRecord)
+
+      matcherStore.setResult({
+        questionId: cacheRecord.id,
+        answer: inferred.answer,
+        answerText: candidate.answerText,
+        confidence: candidate.confidence,
+        matchedQuestion: candidate.question,
+        source: cacheRecord.source,
+        resultSource: 'remote',
+        warning: inferred.answer ? '已采用人工选择的候选题' : '已选择候选题，但未能定位选项字母',
+        candidates: [],
+      })
+      matcherStore.setRemoteResults?.([])
+      matcherStore.setError('')
+      recognitionStore.setOutcome('remote', 0)
+      recognitionStore.setLastCompletedFingerprint(fingerprint)
+      recognitionStore.setLastCompletedQuestion(parsed.normalizedQuestion)
+      lastCompletedCache = {
+        normalizedQuestion: parsed.normalizedQuestion,
+        value: cacheRecord,
+      }
+      activeFingerprint = fingerprint
+      snapshotRetryPending = false
+      questionFailureCooldowns.delete(parsed.normalizedQuestion)
+      recognitionStore.setPhase('showingAnswer', '已采用人工选择的远程候选')
+    },
+
     /** 切换分类时清除题目上下文并废弃旧分类的在途结果。 */
     resetForCategory(): void {
       lifecycleGeneration += 1
@@ -751,19 +800,6 @@ export function createRecognitionController(
       matcherStore.clear()
     },
   }
-}
-
-/** 合并两次远程查询结果，并按题干和答案文本去除重复候选。 */
-function mergeRemoteCandidates(
-  primary: RemoteQuestionCandidate[],
-  secondary: RemoteQuestionCandidate[],
-): RemoteQuestionCandidate[] {
-  return [...new Map(
-    [...primary, ...secondary].map((candidate) => [
-      `${candidate.question}\u0000${candidate.answerText}`,
-      candidate,
-    ]),
-  ).values()]
 }
 
 /** 使用屏幕捕获、OCR、远程查询、缓存与 Pinia Store 创建生产控制器。 */

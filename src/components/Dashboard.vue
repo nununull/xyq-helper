@@ -15,6 +15,7 @@ import { useMatcherStore } from '../stores/matcher'
 import { useOCRStore } from '../stores/ocr'
 import { useRecognitionStore } from '../stores/recognition'
 import { parseQuestion } from '../utils/parseQuestion'
+import type { RemoteAmbiguousCandidate } from '../types/remoteQuestion'
 import { applyCaptureRegions } from '../features/setup/applyCaptureRegion'
 import { hasValidCaptureRegions } from '../types/config'
 import type { CaptureRegion } from '../types/capture'
@@ -130,6 +131,12 @@ function cancelCalibration(): void {
   if (hasCalibration.value) controller.start()
 }
 
+/** 将用户人工确认的远程候选交给识别控制器保存并展示。 */
+async function selectRemoteCandidate(candidate: RemoteAmbiguousCandidate): Promise<void> {
+  if (!parsedQuestion.value) return
+  await controller.selectCandidate(candidate, parsedQuestion.value)
+}
+
 const unsubscribeCaptureEnded = screenCapture.onCaptureEnded(handleCaptureEnded)
 
 onBeforeUnmount(() => {
@@ -231,16 +238,17 @@ onBeforeUnmount(() => {
           <p v-if="captureStore.error" class="error-text">{{ captureStore.error }}</p>
           <p v-if="matcherStore.error" class="error-text">{{ matcherStore.error }}</p>
         </section>
-        <section v-if="matcherStore.remoteCandidates.length" class="panel">
-          <h2>候选题目</h2>
+        <section v-if="matcherStore.remoteResults.length" class="panel">
+          <h2>远程查询结果</h2>
           <article
-            v-for="(candidate, index) in matcherStore.remoteCandidates"
+            v-for="(candidate, index) in matcherStore.remoteResults"
             :key="`${candidate.question}-${index}`"
           >
             <strong>候选 {{ index + 1 }}</strong>
             <p>{{ candidate.question }}</p>
             <p>答案文本：{{ candidate.answerText }}</p>
             <p>置信度：{{ Math.round(candidate.confidence * 100) }}%</p>
+            <button type="button" @click="selectRemoteCandidate(candidate)">选择此结果</button>
           </article>
         </section>
         <SettingsPanel />

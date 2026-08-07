@@ -7,6 +7,7 @@ export const useMatcherStore = defineStore('matcher', {
     result: null as MatchResult | null,
     candidates: [] as MatchCandidate[],
     remoteCandidates: [] as RemoteAmbiguousCandidate[],
+    remoteResults: [] as RemoteAmbiguousCandidate[],
     error: '',
   }),
   actions: {
@@ -25,6 +26,10 @@ export const useMatcherStore = defineStore('matcher', {
       }
       this.remoteCandidates = candidates
     },
+    /** 保存远程接口返回的候选列表，供用户人工选择。 */
+    setRemoteResults(results: RemoteAmbiguousCandidate[]) {
+      this.remoteResults = results
+    },
     /** 发布或清空当前匹配错误。 */
     setError(error: string) {
       this.error = error
@@ -34,6 +39,7 @@ export const useMatcherStore = defineStore('matcher', {
       this.result = null
       this.candidates = []
       this.remoteCandidates = []
+      this.remoteResults = []
       this.error = ''
     },
   },
