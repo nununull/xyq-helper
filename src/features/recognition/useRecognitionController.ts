@@ -750,7 +750,7 @@ export function useRecognitionController(): RecognitionController {
 
   return createRecognitionController({
     captureFrame: runtimeAdapters.captureFrame,
-    recognizeFrame,
+    recognizeFrame: (frame) => recognizeFrame(frame, configStore.config.ocr),
     searchLocal: (parsed) => matchQuestion(
       parsed,
       dbStore.questions,
