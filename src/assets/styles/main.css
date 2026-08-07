@@ -423,7 +423,7 @@ pre {
 
 .preview-answer-value strong {
   color: var(--success);
-  font-size: clamp(28px, 4vw, 52px);
+  font-size: clamp(18px, 2.4vw, 28px);
   line-height: 1;
 }
 
@@ -464,6 +464,35 @@ pre {
 
 .preview-candidate-list p {
   color: var(--muted);
+}
+
+.preview-candidate-list button {
+  width: 100%;
+  margin-top: 8px;
+  padding: 5px 8px;
+  border-color: rgb(0 255 136 / 42%);
+  color: var(--success);
+  background: rgb(0 255 136 / 8%);
+}
+
+.matched-keyword {
+  color: #ff5b5b;
+  font-weight: 700;
+}
+
+.preview-answer-box {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  border: 3px solid #35ff8b;
+  border-radius: 5px;
+  color: #35ff8b;
+  background: rgb(0 255 136 / 12%);
+  box-shadow: 0 0 0 2px rgb(0 0 0 / 55%), 0 0 16px rgb(0 255 136 / 55%);
+  font-size: 15px;
+  font-weight: 800;
+  pointer-events: none;
 }
 
 .calibration-panel {

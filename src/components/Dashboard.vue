@@ -205,8 +205,11 @@ onBeforeUnmount(() => {
           :stream="previewStream"
           :frame="captureStore.lastFrame"
           :result="matcherStore.result"
-          :candidates="matcherStore.remoteCandidates"
+          :candidates="matcherStore.remoteResults.length ? matcherStore.remoteResults : matcherStore.remoteCandidates"
           :recognition-message="recognitionStore.message"
+          :recognized-question="parsedQuestion?.questionText ?? ''"
+          :options-region="configStore.config.capture.optionsRegion"
+          @select-candidate="selectRemoteCandidate"
         />
         <OCRResult :result="ocrStore.lastResult" :parsed="parsedQuestion" />
         <section class="panel">
@@ -237,19 +240,6 @@ onBeforeUnmount(() => {
           <p v-if="matcherStore.result?.warning" class="warning-text">{{ matcherStore.result.warning }}</p>
           <p v-if="captureStore.error" class="error-text">{{ captureStore.error }}</p>
           <p v-if="matcherStore.error" class="error-text">{{ matcherStore.error }}</p>
-        </section>
-        <section v-if="matcherStore.remoteResults.length" class="panel">
-          <h2>远程查询结果</h2>
-          <article
-            v-for="(candidate, index) in matcherStore.remoteResults"
-            :key="`${candidate.question}-${index}`"
-          >
-            <strong>候选 {{ index + 1 }}</strong>
-            <p>{{ candidate.question }}</p>
-            <p>答案文本：{{ candidate.answerText }}</p>
-            <p>置信度：{{ Math.round(candidate.confidence * 100) }}%</p>
-            <button type="button" @click="selectRemoteCandidate(candidate)">选择此结果</button>
-          </article>
         </section>
         <SettingsPanel />
         <UnknownQuestions />

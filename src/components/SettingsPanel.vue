@@ -61,8 +61,8 @@ async function clearRemoteCache(): Promise<void> {
       <input v-model.number="configStore.config.capture.captureFps" min="1" max="5" type="number" />
     </label>
     <label>
-      OCR 阈值
-      <input v-model.number="configStore.config.ocr.threshold" min="0" max="255" type="number" />
+      OCR 放大倍数
+      <input v-model.number="configStore.config.ocr.scale" min="1" max="4" step="0.5" type="number" />
     </label>
     <label>
       最小置信度

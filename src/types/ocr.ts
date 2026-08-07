@@ -4,6 +4,14 @@
 export interface OCRTextBlock {
   text: string
   confidence: number
+  /** PaddleOCR 返回的逐行文本和原图坐标，供预览层精确框选答案。 */
+  lines?: OCRTextLine[]
+}
+
+export interface OCRTextLine {
+  text: string
+  confidence: number
+  polygon: Array<[number, number]>
 }
 
 export interface OCRResult {
