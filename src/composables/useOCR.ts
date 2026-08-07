@@ -19,7 +19,7 @@ let engine: PaddleOCREngine | null = null
 let initialization: Promise<PaddleOCREngine> | null = null
 
 export function useOCR() {
-  /** 初始化 PP-OCRv5 移动端模型，并把推理放入独立线程避免阻塞界面。 */
+  /** 初始化 PP-OCRv5 移动端模型。 */
   async function initializeOCR(): Promise<void> {
     await getOrCreateEngine()
   }
@@ -52,7 +52,7 @@ export function useOCR() {
     }
   }
 
-  /** 销毁 PaddleOCR 模型会话并释放 WebGPU、WASM 与工作线程资源。 */
+  /** 销毁 PaddleOCR 模型会话并释放 WebGPU 与 WASM 资源。 */
   async function terminateOCR(): Promise<void> {
     const activeEngine = engine
     engine = null
@@ -88,7 +88,8 @@ async function createPaddleEngine(): Promise<PaddleOCREngine> {
 
   const { PaddleOCR } = await import('@paddleocr/paddleocr-js')
   return await PaddleOCR.create({
-    worker: true,
+    // 官方 0.4.x Worker 在部分 Vite 构建中无法正确加载其模块资源，先使用稳定的主线程管线。
+    worker: false,
     textDetectionModelName: DETECTION_MODEL,
     textDetectionModelAsset: {
       url: resolvePublicAsset(`${MODEL_DIRECTORY}/${DETECTION_MODEL}_onnx_infer.tar`),
