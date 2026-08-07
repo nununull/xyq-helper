@@ -373,6 +373,39 @@ pre {
   color: var(--primary);
 }
 
+.calibration-legend,
+.calibration-legend span,
+.calibration-actions,
+.calibration-actions > div {
+  display: flex;
+  align-items: center;
+}
+
+.calibration-legend {
+  gap: 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.calibration-legend span {
+  gap: 6px;
+}
+
+.calibration-legend i {
+  width: 12px;
+  height: 12px;
+  border: 2px solid;
+  border-radius: 2px;
+}
+
+.calibration-legend .question-color {
+  border-color: var(--success);
+}
+
+.calibration-legend .options-color {
+  border-color: #f0b429;
+}
+
 .calibration-stage {
   position: relative;
   overflow: hidden;
@@ -392,7 +425,61 @@ pre {
 
 .calibration-selection {
   position: absolute;
-  border: 2px solid var(--success);
-  background: rgb(0 255 136 / 16%);
+  border: 2px solid;
   pointer-events: none;
+}
+
+.calibration-selection.question-selection {
+  border-color: var(--success);
+  background: rgb(0 255 136 / 16%);
+}
+
+.calibration-selection.options-selection {
+  border-color: #f0b429;
+  background: rgb(240 180 41 / 16%);
+}
+
+.calibration-selection.saved:not(.active) {
+  opacity: 0.78;
+}
+
+.calibration-selection.active {
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 72%);
+}
+
+.calibration-selection span {
+  position: absolute;
+  left: -2px;
+  top: -26px;
+  padding: 3px 8px;
+  border-radius: 3px 3px 0 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.calibration-selection.question-selection span {
+  background: var(--success);
+  color: #08130f;
+}
+
+.calibration-selection.options-selection span {
+  background: #f0b429;
+  color: #08130f;
+}
+
+.calibration-actions {
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.calibration-actions > div {
+  gap: 8px;
+}
+
+.calibration-actions .primary-action {
+  border-color: var(--success);
+  color: var(--bg);
+  background: var(--success);
+  font-weight: 700;
 }

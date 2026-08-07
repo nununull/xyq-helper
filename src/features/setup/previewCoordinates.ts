@@ -25,3 +25,24 @@ export function convertPreviewRegionToVideoPixels(
     height: Math.round(height * scaleY),
   }
 }
+
+/** 将共享视频原始像素区域换算为预览元素中的矩形。 */
+export function convertVideoRegionToPreviewPixels(
+  region: CaptureRegion,
+  video: Size,
+  preview: Size,
+): CaptureRegion {
+  const scaleX = preview.width / video.width
+  const scaleY = preview.height / video.height
+  const x = Math.max(0, Math.min(video.width, region.x))
+  const y = Math.max(0, Math.min(video.height, region.y))
+  const width = Math.max(0, Math.min(video.width - x, region.width))
+  const height = Math.max(0, Math.min(video.height - y, region.height))
+
+  return {
+    x: x * scaleX,
+    y: y * scaleY,
+    width: width * scaleX,
+    height: height * scaleY,
+  }
+}

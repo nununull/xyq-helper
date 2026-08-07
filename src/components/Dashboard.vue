@@ -189,6 +189,8 @@ onBeforeUnmount(() => {
         <CaptureCalibration
           v-if="calibrating && previewStream"
           :stream="previewStream"
+          :initial-question-region="configStore.config.capture.questionRegion"
+          :initial-options-region="configStore.config.capture.optionsRegion"
           @completed="completeCalibration"
           @cancel="cancelCalibration"
         />
