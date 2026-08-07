@@ -101,7 +101,7 @@ export function createQuestionFingerprint(text: string): string {
 /** 从题干中按明确优先级选择唯一的高信息量降级关键词。 */
 export function selectFallbackKeyword(text: string): string | null {
   const quoted = extractQuotedKeyword(text)
-  if (quoted) return quoted
+  if (quoted && containsChinese(quoted)) return quoted
 
   const normalized = normalizeQuestionText(text)
   const entity = extractEntityKeyword(normalized)
@@ -110,18 +110,22 @@ export function selectFallbackKeyword(text: string): string | null {
   const quantity = normalized.match(/[0-9零〇一二三四五六七八九十百千万两]+(?:个|位|名|年|次|种|只|条|本|部|座|枚|件|岁|天|月|日)/)?.[0]
   if (quantity && isUsefulKeyword(quantity)) return quantity
 
-  const naturalWord = selectNaturalWord(normalized)
+  const naturalWord = selectNaturalChineseWord(text)
   if (naturalWord) return naturalWord
 
-  return selectHighInformationWindow(normalized)
+  const chineseWindow = selectHighInformationWindow(normalized)
+  if (chineseWindow) return chineseWindow
+
+  if (quoted) return quoted
+  return selectAsciiKeyword(text)
 }
 
-/** 使用浏览器中文分词词典选择自然词组，避免把随机 OCR 字符串作为关键词。 */
-function selectNaturalWord(text: string): string | null {
+/** 使用浏览器中文分词词典选择自然中文词组，避免域名或长数字抢占查询关键词。 */
+function selectNaturalChineseWord(text: string): string | null {
   const segmenter = new Intl.Segmenter('zh-CN', { granularity: 'word' })
   const candidates = [...segmenter.segment(text)]
     .filter((item) => item.isWordLike)
-    .map((item) => item.segment.replace(/[^\p{Script=Han}\p{L}\p{N}]/gu, ''))
+    .map((item) => item.segment.replace(/[^㐀-鿿]/g, ''))
     .filter((word) => isUsefulKeyword(word))
     .map((word, order) => ({
       word,
@@ -131,6 +135,26 @@ function selectNaturalWord(text: string): string | null {
     .sort((left, right) => right.score - left.score || left.order - right.order)
 
   return candidates[0]?.word ?? null
+}
+
+/** 在没有可用中文词时选择完整英文、数字、域名或版本号。 */
+function selectAsciiKeyword(text: string): string | null {
+  const candidates = tokenizeSearchText(text)
+    .filter((token) => /[a-z0-9]/i.test(token))
+    .filter((token) => isUsefulKeyword(token))
+    .map((keyword, order) => ({
+      keyword,
+      order,
+      score: keyword.length + (/[._+-]/.test(keyword) ? 8 : 0),
+    }))
+    .sort((left, right) => right.score - left.score || left.order - right.order)
+
+  return candidates[0]?.keyword ?? null
+}
+
+/** 判断文本中是否包含中文字符。 */
+function containsChinese(text: string): boolean {
+  return /[㐀-鿿]/.test(text)
 }
 
 /** 按成对引号与书名号的优先级提取专有内容。 */
@@ -180,7 +204,7 @@ function selectHighInformationWindow(normalized: string): string | null {
     .replace(separator, ' ')
     .split(/\s+/)
     .map((part) => part.replace(/[^㐀-鿿0-9]/g, ''))
-    .filter((part) => part.length >= 2)
+    .filter((part) => part.length >= 2 && containsChinese(part))
   const candidates: Array<{ keyword: string; score: number; order: number }> = []
   let order = 0
 
