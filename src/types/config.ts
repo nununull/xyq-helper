@@ -1,5 +1,8 @@
 import type { CaptureConfig } from './capture'
 
+export const MIN_CAPTURE_FPS = 1
+export const MAX_CAPTURE_FPS = 30
+
 /**
  * 应用级配置，后续设置项都集中在这里持久化。
  */
@@ -60,12 +63,20 @@ export type PartialAppConfig = {
   [Key in keyof AppConfig]?: Partial<AppConfig[Key]>
 }
 
+/** 将抽帧频率约束到应用支持的整数范围。 */
+export function normalizeCaptureFps(value: unknown): number {
+  const fps = Number(value)
+  if (!Number.isFinite(fps)) return defaultAppConfig.capture.captureFps
+  return Math.min(MAX_CAPTURE_FPS, Math.max(MIN_CAPTURE_FPS, Math.round(fps)))
+}
+
 /** 将持久化配置与当前默认值按分组深层合并，兼容旧版本缺失字段。 */
 export function mergeAppConfig(config: PartialAppConfig | null | undefined): AppConfig {
   const capture = { ...defaultAppConfig.capture, ...config?.capture }
   return {
     capture: {
       ...capture,
+      captureFps: normalizeCaptureFps(capture.captureFps),
       ...(capture.answerRegion ? { answerRegion: { ...capture.answerRegion } } : {}),
       questionRegion: capture.questionRegion ? { ...capture.questionRegion } : null,
       optionsRegion: capture.optionsRegion ? { ...capture.optionsRegion } : null,

@@ -11,6 +11,7 @@ import { useMatcherStore } from '../../stores/matcher'
 import { useOCRStore } from '../../stores/ocr'
 import { useRecognitionStore } from '../../stores/recognition'
 import type { CaptureFrame } from '../../types/capture'
+import { normalizeCaptureFps } from '../../types/config'
 import type { MatchResult } from '../../types/match'
 import type { OCRResult } from '../../types/ocr'
 import type { ParsedQuestion } from '../../types/question'
@@ -19,6 +20,7 @@ import type {
   RemoteAmbiguousCandidate,
   RemoteQueryOptions,
   RemoteQueryResult,
+  RemoteQuestionCandidate,
   RemoteQuestionCache,
 } from '../../types/remoteQuestion'
 import { diceSimilarity } from '../../utils/normalizeText'
@@ -527,9 +529,20 @@ export function createRecognitionController(
       }
 
       const correctedQuestion = correctRemoteQuery?.(parsed)
-      const querySourceText = correctedQuestion ?? parsed.questionText
-      const queryTerms = createProgressiveRemoteQueries(querySourceText)
+      const recognizedQueries = createProgressiveRemoteQueries(parsed.questionText)
+      const correctedQueries = correctedQuestion
+        ? createProgressiveRemoteQueries(correctedQuestion)
+        : []
+      const queryTerms = [
+        ...recognizedQueries.slice(0, 2),
+        ...correctedQueries.slice(0, 2),
+        ...recognizedQueries.slice(2),
+        ...correctedQueries.slice(2),
+      ]
+        .filter((queryText, index, all) => all.indexOf(queryText) === index)
+        .slice(0, 10)
       let decision: RemoteMatchDecision = rankRemoteCandidates(parsed, [], ocrConfidence)
+      const accumulatedCandidates = new Map<string, RemoteQuestionCandidate>()
       matcherStore.setRemoteResults?.([])
 
       for (const [index, queryText] of queryTerms.entries()) {
@@ -549,13 +562,17 @@ export function createRecognitionController(
         }
         if (result.kind === 'empty') continue
 
-        decision = rankRemoteCandidates(parsed, result.candidates, ocrConfidence)
+        for (const candidate of result.candidates) {
+          const key = `${candidate.question}\u0000${candidate.answerText}`
+          accumulatedCandidates.set(key, candidate)
+        }
+        decision = rankRemoteCandidates(parsed, [...accumulatedCandidates.values()], ocrConfidence)
         matcherStore.setRemoteResults?.(decision.candidates.slice(0, 10).map((candidate) => ({
           question: candidate.question,
           answerText: candidate.answerText,
           confidence: candidate.confidence,
         })))
-        if (decision.kind !== 'rejected') break
+        if (decision.kind === 'confident' || decision.kind === 'lowConfidence') break
       }
 
       recognitionStore.setPhase('matching', '正在匹配候选题')
@@ -861,7 +878,7 @@ export function useRecognitionController(): RecognitionController {
     query: queryRemoteQuestions,
     sleep: async (durationMs) => await new Promise((resolve) => setTimeout(resolve, durationMs)),
     getCaptureIntervalMs: () => {
-      const fps = Math.min(5, Math.max(1, configStore.config.capture.captureFps || 1))
+      const fps = normalizeCaptureFps(configStore.config.capture.captureFps)
       return 1_000 / fps
     },
     readCache: getRemoteQuestionCache,

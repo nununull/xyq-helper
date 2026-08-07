@@ -7,6 +7,7 @@ import {
 import { useConfigStore } from '../stores/config'
 import { useMatcherStore } from '../stores/matcher'
 import { useRecognitionStore } from '../stores/recognition'
+import { MAX_CAPTURE_FPS, MIN_CAPTURE_FPS } from '../types/config'
 
 const configStore = useConfigStore()
 const matcherStore = useMatcherStore()
@@ -14,6 +15,11 @@ const recognitionStore = useRecognitionStore()
 const cacheMessage = ref('')
 const cacheError = ref('')
 const selectedCategoryId = computed(() => configStore.config.remoteQuery.categoryId)
+
+/** 保存当前抽帧频率，并将输入值同步为规范化后的结果。 */
+async function persistCaptureFps(): Promise<void> {
+  await configStore.setCaptureFps(configStore.config.capture.captureFps)
+}
 
 /** 在持久化缓存清理成功后废弃内存快照与展示结果。 */
 function invalidateClearedCache(): void {
@@ -58,7 +64,15 @@ async function clearRemoteCache(): Promise<void> {
     <h2>设置</h2>
     <label>
       抽帧频率
-      <input v-model.number="configStore.config.capture.captureFps" min="1" max="5" type="number" />
+      <input
+        v-model.number="configStore.config.capture.captureFps"
+        :min="MIN_CAPTURE_FPS"
+        :max="MAX_CAPTURE_FPS"
+        step="1"
+        type="number"
+        @change="persistCaptureFps"
+      />
+      <small>帧/秒，可设置 {{ MIN_CAPTURE_FPS }}～{{ MAX_CAPTURE_FPS }}，修改后自动保存</small>
     </label>
     <label>
       OCR 放大倍数

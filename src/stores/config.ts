@@ -1,6 +1,11 @@
 import { defineStore } from 'pinia'
 import { toRaw } from 'vue'
-import { defaultAppConfig, mergeAppConfig, type AppConfig } from '../types/config'
+import {
+  defaultAppConfig,
+  mergeAppConfig,
+  normalizeCaptureFps,
+  type AppConfig,
+} from '../types/config'
 import { loadConfig, saveConfig } from '../composables/useLocalStorageDB'
 
 export const useConfigStore = defineStore('config', {
@@ -18,6 +23,12 @@ export const useConfigStore = defineStore('config', {
     async update(config: AppConfig) {
       this.config = config
       await saveConfig(config)
+    },
+    /** 更新抽帧频率并立即持久化，刷新页面后继续沿用。 */
+    async setCaptureFps(captureFps: number) {
+      const nextConfig = structuredClone(toRaw(this.config))
+      nextConfig.capture.captureFps = normalizeCaptureFps(captureFps)
+      await this.update(nextConfig)
     },
     /** 选择并持久化活动分类，不直接修改当前配置对象。 */
     async selectActivityCategory(categoryId: string) {

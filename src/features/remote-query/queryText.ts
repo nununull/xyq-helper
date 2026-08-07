@@ -11,6 +11,8 @@ const questionScaffolds = [
   '是否', '中', '的', '是', '吗',
 ]
 const searchTokenPattern = /[a-z0-9]+(?:[._+-][a-z0-9]+)*|[㐀-鿿]/giu
+const weakInformationCharacters = new Set('的是了在和与或为有中上下列以哪什么谁否吗呢项个种位说法正确错误属于关于')
+const maximumProgressiveQueryCount = 7
 
 export interface SimilarQuestionEntry<T> {
   normalizedQuestion: string
@@ -60,21 +62,89 @@ export function createCompactRemoteQueryText(text: string, maximumLength = 14): 
   return keyword ?? takeSearchTokens(cleaned, maximumLength)
 }
 
-/** 优先发送完整高信息词，再按语义单元缩短；连续英文和数字始终作为一个整体。 */
+/**
+ * 先用完整题干精确收窄结果，再使用多个高信息连续片段容忍 OCR 错字。
+ * 远程接口只返回有限的前排结果，不能先用单个宽泛词召回几百道题。
+ */
 export function createProgressiveRemoteQueries(text: string, maximumLength = 8): string[] {
   const cleaned = cleanRemoteQueryText(text)
-  const keyword = selectFallbackKeyword(cleaned)
-  const seed = keyword ?? createCompactRemoteQueryText(cleaned, maximumLength)
-  const tokens = tokenizeSearchText(seed).slice(0, maximumLength)
-  if (!tokens.length) return []
+  const compact = tokenizeSearchText(cleaned).join('')
+  if (!compact) return []
 
-  const minimumLength = tokens.some((token) => /^[㐀-鿿]$/.test(token)) ? 2 : 1
   const queries: string[] = []
-  for (let length = tokens.length; length >= Math.min(minimumLength, tokens.length); length -= 1) {
-    const query = tokens.slice(0, length).join('')
-    if (query && !queries.includes(query)) queries.push(query)
+  appendUniqueQuery(queries, cleaned)
+  appendUniqueQuery(queries, compact)
+
+  for (const window of selectDiscriminativeWindows(compact, maximumLength, 4)) {
+    appendUniqueQuery(queries, window)
   }
-  return queries
+
+  // 最后才使用单个实体词兜底，避免宽查询返回的前 20 条淹没正确题目。
+  appendUniqueQuery(queries, selectFallbackKeyword(cleaned))
+  return queries.slice(0, maximumProgressiveQueryCount)
+}
+
+/** 添加非空且未出现过的查询，保持查询优先级稳定。 */
+function appendUniqueQuery(queries: string[], query: string | null): void {
+  const value = query?.trim()
+  if (value && !queries.includes(value)) queries.push(value)
+}
+
+/**
+ * 从题干选择彼此尽量分散的连续高信息窗口。
+ * 连续窗口可被远程题干直接命中，多个窗口则能绕开任意位置的一两个 OCR 错字。
+ */
+function selectDiscriminativeWindows(
+  text: string,
+  maximumLength: number,
+  limit: number,
+): string[] {
+  const tokens = tokenizeSearchText(text)
+  const windowLength = Math.min(Math.max(4, maximumLength), tokens.length)
+  if (tokens.length <= windowLength) return [text]
+
+  const candidates: Array<{ value: string; start: number; score: number }> = []
+  for (let start = 0; start <= tokens.length - windowLength; start += 1) {
+    const value = tokens.slice(start, start + windowLength).join('')
+    candidates.push({
+      value,
+      start,
+      score: scoreQueryWindow(value, start, windowLength, tokens.length),
+    })
+  }
+  candidates.sort((left, right) => right.score - left.score || left.start - right.start)
+
+  const selected: typeof candidates = []
+  for (const candidate of candidates) {
+    const overlapsHeavily = selected.some((current) => (
+      Math.abs(current.start - candidate.start) < Math.ceil(windowLength / 2)
+    ))
+    if (overlapsHeavily) continue
+    selected.push(candidate)
+    if (selected.length === limit) break
+  }
+
+  return selected.map((candidate) => candidate.value)
+}
+
+/** 依据实词密度、数字和英文专名为连续查询窗口评分。 */
+function scoreQueryWindow(
+  value: string,
+  start: number,
+  windowLength: number,
+  textLength: number,
+): number {
+  let score = 0
+  for (const character of value) {
+    if (/[a-z0-9]/i.test(character)) score += 4
+    else if (!weakInformationCharacters.has(character)) score += 2
+    else score -= 1
+  }
+  if (/[㐀-鿿]{2,}/.test(value)) score += 2
+  // 轻微偏向题干中部，避免总是取到“以下哪个”等固定开头或语气结尾。
+  const center = start + windowLength / 2
+  score -= Math.abs(center - textLength / 2) / Math.max(1, textLength)
+  return score
 }
 
 /** 将连续英文、数字及常见版本连接符合并为不可拆分的搜索单元。 */
