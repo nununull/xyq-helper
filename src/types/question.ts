@@ -20,6 +20,31 @@ export interface QuestionRecord {
   source: string
 }
 
+export interface UserQuestionRecord {
+  id?: number
+  baseKey?: string
+  question: string
+  options: Record<AnswerOptionKey, string>
+  answer?: AnswerOptionKey
+  answerText?: string
+  category: string
+  source: 'manual'
+  createdAt: string
+  updatedAt: string
+  revision: number
+}
+
+export interface QuestionBankPackage {
+  format: 'xyq-question-bank'
+  schemaVersion: 1
+  mode: 'full' | 'patch'
+  name: string
+  version: string
+  exportedAt: string
+  questions?: QuestionRecord[]
+  changes: UserQuestionRecord[]
+}
+
 export interface UnknownQuestion {
   id?: number
   question: string

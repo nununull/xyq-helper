@@ -8,6 +8,15 @@ let activeTrackEndedHandler: (() => void) | null = null
 let captureGeneration = 0
 const captureEndedListeners = new Set<() => void>()
 
+interface CaptureSurface {
+  canvas: HTMLCanvasElement
+  context: CanvasRenderingContext2D
+}
+
+let questionSurface: CaptureSurface | null = null
+let optionsSurface: CaptureSurface | null = null
+let answerSurface: CaptureSurface | null = null
+
 /** 向全部订阅者广播当前屏幕捕获轨道已经结束。 */
 function notifyCaptureEnded(): void {
   captureEndedListeners.forEach((listener) => listener())
@@ -26,6 +35,9 @@ function releaseActiveCapture(): void {
   videoElement = null
   activeVideoTrack = null
   activeTrackEndedHandler = null
+  questionSurface = null
+  optionsSurface = null
+  answerSurface = null
 }
 
 /** 仅处理仍拥有当前捕获代次的轨道结束事件。 */
@@ -99,23 +111,27 @@ export function useScreenCapture() {
 
   /** 按配置区域裁剪当前视频帧。 */
   function captureCurrentFrame(config: CaptureConfig): CaptureFrame | null {
-    if (!videoElement || !config.questionRegion || !config.optionsRegion) {
-      return null
+    if (!videoElement) return null
+
+    if (config.answerRegion) {
+      answerSurface = prepareCaptureSurface(answerSurface, config.answerRegion)
+      if (!answerSurface) return null
+      const answerImage = captureRegion(videoElement, answerSurface, config.answerRegion)
+      return {
+        answerImage,
+        capturedAt: Date.now(),
+        frameHash: createFrameHash(answerImage),
+      }
     }
 
-    const sourceCanvas = document.createElement('canvas')
-    sourceCanvas.width = videoElement.videoWidth
-    sourceCanvas.height = videoElement.videoHeight
-    // 捕获流程会连续读取题干和选项像素，提示浏览器优先采用适合频繁回读的画布实现。
-    const sourceContext = sourceCanvas.getContext('2d', { willReadFrequently: true })
-    if (!sourceContext) {
-      return null
-    }
+    if (!config.questionRegion || !config.optionsRegion) return null
 
-    sourceContext.drawImage(videoElement, 0, 0, sourceCanvas.width, sourceCanvas.height)
+    questionSurface = prepareCaptureSurface(questionSurface, config.questionRegion)
+    optionsSurface = prepareCaptureSurface(optionsSurface, config.optionsRegion)
+    if (!questionSurface || !optionsSurface) return null
 
-    const questionImage = cropRegion(sourceContext, config.questionRegion)
-    const optionsImage = cropRegion(sourceContext, config.optionsRegion)
+    const questionImage = captureRegion(videoElement, questionSurface, config.questionRegion)
+    const optionsImage = captureRegion(videoElement, optionsSurface, config.optionsRegion)
 
     return {
       questionImage,
@@ -134,15 +150,42 @@ export function useScreenCapture() {
   }
 }
 
-/** 从源画布中裁剪一个经过像素比换算的区域。 */
-function cropRegion(
-  sourceContext: CanvasRenderingContext2D,
+/** 创建或调整可复用的区域画布，避免连续抽帧反复分配大块内存。 */
+function prepareCaptureSurface(
+  surface: CaptureSurface | null,
+  region: CaptureRegion,
+): CaptureSurface | null {
+  const width = Math.max(1, Math.round(region.width))
+  const height = Math.max(1, Math.round(region.height))
+  if (!surface) {
+    const canvas = document.createElement('canvas')
+    const context = canvas.getContext('2d', { willReadFrequently: true })
+    if (!context) return null
+    surface = { canvas, context }
+  }
+  if (surface.canvas.width !== width) surface.canvas.width = width
+  if (surface.canvas.height !== height) surface.canvas.height = height
+  return surface
+}
+
+/** 从共享视频直接裁剪目标区域，跳过整张游戏画面的中间画布。 */
+function captureRegion(
+  source: HTMLVideoElement,
+  surface: CaptureSurface,
   region: CaptureRegion,
 ): ImageData {
-  return sourceContext.getImageData(
+  const { canvas, context } = surface
+  context.clearRect(0, 0, canvas.width, canvas.height)
+  context.drawImage(
+    source,
     Math.round(region.x),
     Math.round(region.y),
-    Math.round(region.width),
-    Math.round(region.height),
+    canvas.width,
+    canvas.height,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
   )
+  return context.getImageData(0, 0, canvas.width, canvas.height)
 }

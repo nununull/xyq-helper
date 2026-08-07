@@ -8,52 +8,36 @@ import type { CaptureRegion } from '../types/capture'
 
 const props = defineProps<{
   stream: MediaStream
-  initialQuestionRegion: CaptureRegion | null
-  initialOptionsRegion: CaptureRegion | null
+  initialAnswerRegion: CaptureRegion | null
 }>()
 
 const emit = defineEmits<{
-  completed: [questionRegion: CaptureRegion, optionsRegion: CaptureRegion]
+  completed: [answerRegion: CaptureRegion]
   cancel: []
 }>()
 
 const video = ref<HTMLVideoElement | null>(null)
 const stage = ref<HTMLElement | null>(null)
-const step = ref<'question' | 'options'>('question')
 const selecting = ref(false)
 const startPoint = ref({ x: 0, y: 0 })
 const draftRegion = ref<CaptureRegion | null>(null)
-const questionRegion = ref<CaptureRegion | null>(cloneRegion(props.initialQuestionRegion))
-const optionsRegion = ref<CaptureRegion | null>(cloneRegion(props.initialOptionsRegion))
+const answerRegion = ref<CaptureRegion | null>(
+  props.initialAnswerRegion ? { ...props.initialAnswerRegion } : null,
+)
 const previewSize = ref({ width: 0, height: 0 })
 const videoSize = ref({ width: 0, height: 0 })
 let resizeObserver: ResizeObserver | null = null
 
-const stepMessage = computed(() => step.value === 'question'
-  ? '在共享画面内拖动框选题干，绿色框会保留在画面中'
-  : '继续框选 A、B、C、D 选项，完成后点击“确认校准”')
-const questionPreviewRegion = computed(() => toPreviewRegion(questionRegion.value))
-const optionsPreviewRegion = computed(() => toPreviewRegion(optionsRegion.value))
-const canConfirm = computed(() => questionRegion.value !== null && optionsRegion.value !== null)
+const answerPreviewRegion = computed(() => toPreviewRegion(answerRegion.value))
+const visibleRegion = computed(() => draftRegion.value ?? answerPreviewRegion.value)
 
-/** 复制区域数据，避免校准过程直接修改持久化配置。 */
-function cloneRegion(region: CaptureRegion | null): CaptureRegion | null {
-  return region ? { ...region } : null
-}
-
-/** 将视频像素区域换算为当前预览框中的展示区域。 */
+/** 将视频像素区域换算为当前预览中的展示区域。 */
 function toPreviewRegion(region: CaptureRegion | null): CaptureRegion | null {
-  if (
-    !region
-    || previewSize.value.width <= 0
-    || previewSize.value.height <= 0
-    || videoSize.value.width <= 0
-    || videoSize.value.height <= 0
-  ) return null
+  if (!region || !previewSize.value.width || !videoSize.value.width) return null
   return convertVideoRegionToPreviewPixels(region, videoSize.value, previewSize.value)
 }
 
-/** 同步共享视频与预览容器尺寸，保证选框始终贴合画面。 */
+/** 同步共享视频与预览容器尺寸。 */
 function syncStageSize(): void {
   const bounds = stage.value?.getBoundingClientRect()
   const source = video.value
@@ -63,7 +47,7 @@ function syncStageSize(): void {
   }
 }
 
-/** 将当前共享流绑定到预览视频。 */
+/** 将共享流绑定到校准视频。 */
 async function bindStream(): Promise<void> {
   await nextTick()
   if (!video.value) return
@@ -82,7 +66,7 @@ function readLocalPoint(event: PointerEvent): { x: number; y: number } | null {
   }
 }
 
-/** 开始一次区域框选并捕获后续指针事件。 */
+/** 开始框选完整答题窗口。 */
 function startSelection(event: PointerEvent): void {
   const point = readLocalPoint(event)
   if (!point) return
@@ -92,7 +76,7 @@ function startSelection(event: PointerEvent): void {
   stage.value?.setPointerCapture(event.pointerId)
 }
 
-/** 根据当前指针位置更新框选矩形。 */
+/** 根据指针位置更新当前选框。 */
 function moveSelection(event: PointerEvent): void {
   if (!selecting.value) return
   const point = readLocalPoint(event)
@@ -105,7 +89,7 @@ function moveSelection(event: PointerEvent): void {
   }
 }
 
-/** 完成当前框选，并把结果保留在共享画面上等待用户确认。 */
+/** 完成选框并转换成视频原始像素坐标。 */
 function finishSelection(event: PointerEvent): void {
   if (!selecting.value) return
   moveSelection(event)
@@ -114,37 +98,26 @@ function finishSelection(event: PointerEvent): void {
   const preview = stage.value?.getBoundingClientRect()
   const source = video.value
   if (!region || !preview || !source || region.width < 8 || region.height < 8) return
-
-  const videoRegion = convertPreviewRegionToVideoPixels(
+  answerRegion.value = convertPreviewRegionToVideoPixels(
     region,
     { width: preview.width, height: preview.height },
     { width: source.videoWidth, height: source.videoHeight },
   )
-  if (step.value === 'question') {
-    questionRegion.value = videoRegion
-    draftRegion.value = null
-    step.value = 'options'
-    return
-  }
-  optionsRegion.value = videoRegion
   draftRegion.value = null
 }
 
-/** 切换要重新框选的区域，并清除该区域的旧框。 */
-function selectRegion(type: 'question' | 'options'): void {
-  step.value = type
-  draftRegion.value = null
-  if (type === 'question') questionRegion.value = null
-  else optionsRegion.value = null
-}
-
-/** 确认并提交当前画面中展示的题干与选项区域。 */
+/** 确认并提交完整答题区域。 */
 function confirmCalibration(): void {
-  if (!questionRegion.value || !optionsRegion.value) return
-  emit('completed', questionRegion.value, optionsRegion.value)
+  if (answerRegion.value) emit('completed', answerRegion.value)
 }
 
-/** 生成选框的定位样式。 */
+/** 清空旧区域并等待重新框选。 */
+function resetSelection(): void {
+  answerRegion.value = null
+  draftRegion.value = null
+}
+
+/** 生成选框定位样式。 */
 function regionStyle(region: CaptureRegion): Record<string, string> {
   return {
     left: `${region.x}px`,
@@ -160,20 +133,21 @@ onMounted(() => {
   if (stage.value) resizeObserver.observe(stage.value)
   void bindStream()
 })
-
-onBeforeUnmount(() => resizeObserver?.disconnect())
+onBeforeUnmount(() => {
+  resizeObserver?.disconnect()
+  if (video.value) video.value.srcObject = null
+})
 </script>
 
 <template>
   <section class="panel calibration-panel">
     <div class="calibration-header">
       <div>
-        <h2>校准识别区域</h2>
-        <p>{{ stepMessage }}</p>
+        <h2>校准答题区域</h2>
+        <p>拖动框选包含题干和全部选项的完整答题窗口，只需框选一次。</p>
       </div>
       <div class="calibration-legend" aria-label="选框图例">
-        <span><i class="question-color" />题干</span>
-        <span><i class="options-color" />选项</span>
+        <span><i class="answer-color" />完整答题区域</span>
       </div>
     </div>
     <div
@@ -185,36 +159,20 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
     >
       <video ref="video" muted playsinline @loadedmetadata="syncStageSize" />
       <div
-        v-if="questionPreviewRegion"
-        class="calibration-selection saved question-selection"
-        :class="{ active: step === 'question' }"
-        :style="regionStyle(questionPreviewRegion)"
+        v-if="visibleRegion"
+        class="calibration-selection answer-selection active"
+        :style="regionStyle(visibleRegion)"
       >
-        <span>题干</span>
+        <span v-if="!draftRegion">答题区域</span>
       </div>
-      <div
-        v-if="optionsPreviewRegion"
-        class="calibration-selection saved options-selection"
-        :class="{ active: step === 'options' }"
-        :style="regionStyle(optionsPreviewRegion)"
-      >
-        <span>选项</span>
-      </div>
-      <div
-        v-if="draftRegion"
-        class="calibration-selection draft"
-        :class="step === 'question' ? 'question-selection' : 'options-selection'"
-        :style="regionStyle(draftRegion)"
-      />
     </div>
     <div class="calibration-actions">
       <div>
-        <button type="button" @click="selectRegion('question')">重选题干</button>
-        <button type="button" @click="selectRegion('options')">重选选项</button>
+        <button type="button" @click="resetSelection">重新框选</button>
       </div>
       <div>
         <button type="button" @click="emit('cancel')">取消校准</button>
-        <button class="primary-action" type="button" :disabled="!canConfirm" @click="confirmCalibration">
+        <button class="primary-action" type="button" :disabled="!answerRegion" @click="confirmCalibration">
           确认校准
         </button>
       </div>

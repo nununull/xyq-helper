@@ -13,3 +13,16 @@ export function applyCaptureRegions(
   next.capture.regionCoordinateSpace = 'video-pixel-v1'
   return next
 }
+
+/** 将一次框选的完整答题区域写入配置，并停用旧版双区域坐标。 */
+export function applyAnswerRegion(
+  config: PartialAppConfig,
+  answerRegion: CaptureRegion,
+): AppConfig {
+  const next = mergeAppConfig(config)
+  next.capture.answerRegion = { ...answerRegion }
+  next.capture.questionRegion = null
+  next.capture.optionsRegion = null
+  next.capture.regionCoordinateSpace = 'video-pixel-v1'
+  return next
+}

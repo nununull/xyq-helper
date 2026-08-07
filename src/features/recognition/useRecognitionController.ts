@@ -21,6 +21,7 @@ import type {
   RemoteQueryResult,
   RemoteQuestionCache,
 } from '../../types/remoteQuestion'
+import { diceSimilarity } from '../../utils/normalizeText'
 import { parseQuestion } from '../../utils/parseQuestion'
 import { findLikelyQuestionText, matchQuestion } from '../../utils/matcher'
 import {
@@ -41,6 +42,7 @@ import { createRecognitionRuntimeAdapters } from './recognitionRuntimeAdapters'
 const POLL_INTERVAL_MS = 120
 const QUESTION_FAILURE_COOLDOWN_MS = 10_000
 const CATEGORY_RATE_LIMIT_COOLDOWN_MS = 60_000
+const SAME_QUESTION_SIMILARITY = 0.95
 
 interface RecognitionStorePort {
   readonly cacheGeneration: number
@@ -113,6 +115,8 @@ export interface RecognitionControllerDependencies {
   correctRemoteQuery?(parsed: ParsedQuestion): string | null
   /** 等待下一次轮询间隔。 */
   sleep(durationMs: number): Promise<void>
+  /** 读取连续抽帧的目标间隔；省略时使用控制器默认值。 */
+  getCaptureIntervalMs?(): number
   /** 按分类和题目指纹读取缓存。 */
   readCache(categoryId: string, fingerprint: string): Promise<RemoteQuestionCache | undefined>
   /** 持久化新增或更新后的缓存。 */
@@ -152,6 +156,7 @@ export function createRecognitionController(
     correctRemoteQuery,
     query,
     sleep,
+    getCaptureIntervalMs,
     readCache,
     writeCache,
     getCategoryId,
@@ -231,6 +236,12 @@ export function createRecognitionController(
     invalidateActiveSolve()
     activeFingerprint = null
     matcherStore.clear()
+  }
+
+  /** 判断有效 OCR 题干是否仍属于当前题目，吸收少量字符抖动。 */
+  function isCurrentQuestion(normalizedQuestion: string): boolean {
+    if (!lastStableQuestion) return false
+    return diceSimilarity(normalizedQuestion, lastStableQuestion) >= SAME_QUESTION_SIMILARITY
   }
 
   /** 清理过期记录后，查找与当前题干足够相似的有效失败冷却。 */
@@ -582,12 +593,6 @@ export function createRecognitionController(
       resumeStableSnapshotIfReady()
       return
     }
-    if (lastStableFrameHash !== null) {
-      // 画面一变化就撤下旧答案并中止旧请求，避免上一题结果覆盖新题画面。
-      invalidateActiveSolve()
-      matcherStore.clear()
-    }
-
     matcherStore.setError('')
     recognitionStore.setPhase('capturing', '正在处理新的题目画面')
     recognitionStore.setPhase('recognizing', '正在识别题目文字')
@@ -611,11 +616,19 @@ export function createRecognitionController(
     const canUseCurrentFrame = parsed.normalizedQuestion.length >= 4
       && Object.values(parsed.options).filter(Boolean).length >= 2
     if (stability.kind !== 'stable' && stability.kind !== 'forcedStable' && !canUseCurrentFrame) {
-      beginPendingQuestion()
+      // 单帧漏字或空结果不能证明已经换题，保留仍与画面对应的现有答案。
+      if (!lastStableQuestion) beginPendingQuestion()
       return
     }
     const stable = parsed
     const fingerprint = createQuestionFingerprint(stable.normalizedQuestion)
+    const questionChanged = Boolean(lastStableQuestion) && !isCurrentQuestion(stable.normalizedQuestion)
+
+    if (questionChanged) {
+      // 仅在 OCR 确认题干变化后撤下旧答案，忽略倒计时、光效等像素级变化。
+      invalidateActiveSolve()
+      matcherStore.clear()
+    }
 
     const ocrConfidence = (recognized.question.confidence + recognized.options.confidence) / 2
     lastStableFrameHash = captured.frameHash
@@ -623,7 +636,7 @@ export function createRecognitionController(
     lastStableSnapshot = { parsed: stable, ocrConfidence, frameHash: captured.frameHash }
     if (fingerprint !== activeFingerprint) {
       invalidateActiveSolve()
-      matcherStore.clear()
+      if (questionChanged) matcherStore.clear()
       activeFingerprint = fingerprint
     }
     const categoryId = getCategoryId()
@@ -679,6 +692,7 @@ export function createRecognitionController(
   /** 按固定间隔持续调度串行识别帧。 */
   async function runLoop(): Promise<void> {
     while (running) {
+      const cycleStartedAt = getCaptureIntervalMs ? now() : 0
       try {
         await enqueueFrame()
       } catch (error) {
@@ -689,7 +703,13 @@ export function createRecognitionController(
         }
       }
       if (!running) break
-      await sleep(POLL_INTERVAL_MS)
+      if (!getCaptureIntervalMs) {
+        await sleep(POLL_INTERVAL_MS)
+        continue
+      }
+      const elapsedMs = Math.max(0, now() - cycleStartedAt)
+      const remainingMs = Math.max(0, getCaptureIntervalMs() - elapsedMs)
+      if (remainingMs > 0) await sleep(remainingMs)
     }
   }
 
@@ -819,8 +839,14 @@ export function useRecognitionController(): RecognitionController {
   })
 
   return createRecognitionController({
-    captureFrame: runtimeAdapters.captureFrame,
-    recognizeFrame: (frame) => recognizeFrame(frame, configStore.config.ocr),
+    captureFrame: async () => {
+      await yieldToInteraction()
+      return runtimeAdapters.captureFrame()
+    },
+    recognizeFrame: async (frame) => {
+      await yieldToInteraction()
+      return await recognizeFrame(frame, configStore.config.ocr)
+    },
     searchLocal: (parsed) => matchQuestion(
       parsed,
       dbStore.questions,
@@ -834,6 +860,10 @@ export function useRecognitionController(): RecognitionController {
     ),
     query: queryRemoteQuestions,
     sleep: async (durationMs) => await new Promise((resolve) => setTimeout(resolve, durationMs)),
+    getCaptureIntervalMs: () => {
+      const fps = Math.min(5, Math.max(1, configStore.config.capture.captureFps || 1))
+      return 1_000 / fps
+    },
     readCache: getRemoteQuestionCache,
     writeCache: putRemoteQuestionCache,
     getCategoryId: () => configStore.config.remoteQuery.categoryId,
@@ -882,4 +912,9 @@ export function useRecognitionController(): RecognitionController {
     },
     matcherStore,
   })
+}
+
+/** 在像素处理前让出一次主线程，使已经排队的点击和输入优先得到响应。 */
+async function yieldToInteraction(): Promise<void> {
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
 }

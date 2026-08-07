@@ -37,6 +37,19 @@ export const demoQuestions: QuestionRecord[] = [
 
 export type TrigramIndex = Record<string, number[]>
 
+/** 为当前有效题库生成三元字符索引。 */
+export function buildTrigramIndex(questions: QuestionRecord[]): TrigramIndex {
+  const index: TrigramIndex = {}
+  for (const question of questions) {
+    const grams = new Set([
+      ...createTrigrams(question.normalizedQuestion),
+      ...createTrigrams(question.normalizedOptions),
+    ])
+    for (const gram of grams) (index[gram] ??= []).push(question.id)
+  }
+  return index
+}
+
 /**
  * 使用题干相似度和选项相似度对候选题排序。
  */

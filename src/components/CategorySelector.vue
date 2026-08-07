@@ -12,11 +12,25 @@ const emit = defineEmits<{
 }>()
 
 const keyword = ref('')
+const expandedGroups = ref(new Set<string>())
 const totalCount = activityCategoryGroups.reduce(
   (count, group) => count + group.categories.length,
   0,
 )
 const visibleGroups = computed(() => filterCategoryGroups(activityCategoryGroups, keyword.value))
+
+/** 判断分类组是否展开；搜索时自动展示所有命中结果。 */
+function isExpanded(groupName: string): boolean {
+  return Boolean(keyword.value.trim()) || expandedGroups.value.has(groupName)
+}
+
+/** 切换单个活动分类组的折叠状态。 */
+function toggleGroup(groupName: string): void {
+  const next = new Set(expandedGroups.value)
+  if (next.has(groupName)) next.delete(groupName)
+  else next.add(groupName)
+  expandedGroups.value = next
+}
 </script>
 
 <template>
@@ -31,17 +45,22 @@ const visibleGroups = computed(() => filterCategoryGroups(activityCategoryGroups
     </label>
     <div class="category-list">
       <section v-for="group in visibleGroups" :key="group.name" class="category-group">
-        <h3>{{ group.name }} <span>{{ group.categories.length }}</span></h3>
-        <button
-          v-for="category in group.categories"
-          :key="category.id"
-          type="button"
-          class="category-button"
-          :class="{ active: selectedId === category.id }"
-          @click="emit('select', category.id)"
-        >
-          {{ category.name }}
+        <button type="button" class="category-group-toggle" @click="toggleGroup(group.name)">
+          <span>{{ isExpanded(group.name) ? '▾' : '▸' }} {{ group.name }}</span>
+          <small>{{ group.categories.length }}</small>
         </button>
+        <div v-if="isExpanded(group.name)" class="category-group-items">
+          <button
+            v-for="category in group.categories"
+            :key="category.id"
+            type="button"
+            class="category-button"
+            :class="{ active: selectedId === category.id }"
+            @click="emit('select', category.id)"
+          >
+            {{ category.name }}
+          </button>
+        </div>
       </section>
       <p v-if="visibleGroups.length === 0" class="muted">没有匹配的分类。</p>
     </div>

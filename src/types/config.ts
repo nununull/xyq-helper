@@ -66,6 +66,7 @@ export function mergeAppConfig(config: PartialAppConfig | null | undefined): App
   return {
     capture: {
       ...capture,
+      ...(capture.answerRegion ? { answerRegion: { ...capture.answerRegion } } : {}),
       questionRegion: capture.questionRegion ? { ...capture.questionRegion } : null,
       optionsRegion: capture.optionsRegion ? { ...capture.optionsRegion } : null,
     },
@@ -79,6 +80,6 @@ export function mergeAppConfig(config: PartialAppConfig | null | undefined): App
 /** 判断题干和选项区域是否都属于当前支持的视频像素坐标系。 */
 export function hasValidCaptureRegions(capture: CaptureConfig): boolean {
   return capture.regionCoordinateSpace === 'video-pixel-v1'
-    && capture.questionRegion !== null
-    && capture.optionsRegion !== null
+    && (capture.answerRegion !== null && capture.answerRegion !== undefined
+      || capture.questionRegion !== null && capture.optionsRegion !== null)
 }

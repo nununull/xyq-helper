@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, shallowRef } from 'vue'
+import { computed, nextTick, onBeforeUnmount, shallowRef } from 'vue'
 import CaptureCalibration from './CaptureCalibration.vue'
 import CapturePreview from './CapturePreview.vue'
+import AnswerOverlay from './AnswerOverlay.vue'
 import CategorySelector from './CategorySelector.vue'
 import OCRResult from './OCRResult.vue'
+import QuestionBankManager from './QuestionBankManager.vue'
 import SettingsPanel from './SettingsPanel.vue'
 import UnknownQuestions from './UnknownQuestions.vue'
 import { useOCR } from '../composables/useOCR'
@@ -16,7 +18,7 @@ import { useOCRStore } from '../stores/ocr'
 import { useRecognitionStore } from '../stores/recognition'
 import { parseQuestion } from '../utils/parseQuestion'
 import type { RemoteAmbiguousCandidate } from '../types/remoteQuestion'
-import { applyCaptureRegions } from '../features/setup/applyCaptureRegion'
+import { applyAnswerRegion } from '../features/setup/applyCaptureRegion'
 import { hasValidCaptureRegions } from '../types/config'
 import type { CaptureRegion } from '../types/capture'
 
@@ -30,9 +32,42 @@ const ocr = useOCR()
 const controller = useRecognitionController()
 const previewStream = shallowRef<MediaStream | null>(null)
 const calibrating = shallowRef(false)
+const activePage = shallowRef<'recognition' | 'questionBank'>('recognition')
+const pageSwitching = shallowRef(false)
+const ocrRuntimeLabel = computed(() => ({
+  uninitialized: '尚未初始化',
+  worker: 'Worker 后台线程',
+  'main-thread': '主线程兼容模式',
+  error: '初始化失败',
+}[ocr.runtimeMode.value]))
+
+/** 将内部捕获状态转换为面向用户的中文文案。 */
+const captureStatusLabel = computed(() => ({
+  idle: '待连接',
+  requesting: '授权中',
+  active: '识别中',
+  paused: '已暂停',
+  error: '异常',
+}[captureStore.status] ?? captureStore.status))
 
 const selectedCategoryId = computed(() => configStore.config.remoteQuery.categoryId)
 const hasCalibration = computed(() => hasValidCaptureRegions(configStore.config.capture))
+const calibratedAnswerRegion = computed(() => {
+  const capture = configStore.config.capture
+  if (capture.answerRegion) return capture.answerRegion
+  if (!capture.questionRegion || !capture.optionsRegion) return null
+  const left = Math.min(capture.questionRegion.x, capture.optionsRegion.x)
+  const top = Math.min(capture.questionRegion.y, capture.optionsRegion.y)
+  const right = Math.max(
+    capture.questionRegion.x + capture.questionRegion.width,
+    capture.optionsRegion.x + capture.optionsRegion.width,
+  )
+  const bottom = Math.max(
+    capture.questionRegion.y + capture.questionRegion.height,
+    capture.optionsRegion.y + capture.optionsRegion.height,
+  )
+  return { x: left, y: top, width: right - left, height: bottom - top }
+})
 const actionHint = computed(() => {
   if (!selectedCategoryId.value) return '请先选择左侧活动分类，再连接游戏画面。'
   if (captureStore.status === 'requesting') return '正在等待浏览器共享授权，请在弹出的窗口中选择游戏窗口。'
@@ -48,43 +83,6 @@ const parsedQuestion = computed(() => (
 const displayedCandidates = computed(() => (
   matcherStore.remoteResults.length ? matcherStore.remoteResults : matcherStore.remoteCandidates
 ))
-const matchedAnswerText = computed(() => {
-  const result = matcherStore.result
-  if (!result) return ''
-  const answerText = result.answerText?.trim()
-  if (answerText && answerText !== result.answer) return answerText
-  return result.answer ? (parsedQuestion.value?.options[result.answer] ?? '') : ''
-})
-
-/** 格式化候选答案置信度。 */
-function formatConfidence(confidence: number): string {
-  return `${Math.round(confidence * 100)}%`
-}
-
-/** 将候选题中与 OCR 题干重合的连续字符分段，供界面标红。 */
-function highlightQuestion(question: string): Array<{ text: string; matched: boolean }> {
-  const recognized = (parsedQuestion.value?.questionText ?? '').replace(/[^㐀-鿿0-9a-z]/gi, '')
-  if (recognized.length < 2) return [{ text: question, matched: false }]
-
-  const matchedIndexes = new Set<number>()
-  for (let index = 0; index < question.length - 1; index += 1) {
-    const pair = question.slice(index, index + 2)
-    if (/^[㐀-鿿0-9a-z]{2}$/i.test(pair) && recognized.includes(pair)) {
-      matchedIndexes.add(index)
-      matchedIndexes.add(index + 1)
-    }
-  }
-
-  const segments: Array<{ text: string; matched: boolean }> = []
-  for (let index = 0; index < question.length; index += 1) {
-    const matched = matchedIndexes.has(index)
-    const previous = segments.at(-1)
-    if (previous?.matched === matched) previous.text += question[index]
-    else segments.push({ text: question[index], matched })
-  }
-  return segments
-}
-
 /** 获取屏幕共享，并根据区域配置进入校准或连续识别。 */
 async function startCapture(): Promise<void> {
   if (
@@ -150,16 +148,9 @@ function beginCalibration(): void {
   calibrating.value = true
 }
 
-/** 保存两个视频像素区域并立即启动连续识别。 */
-async function completeCalibration(
-  questionRegion: CaptureRegion,
-  optionsRegion: CaptureRegion,
-): Promise<void> {
-  await configStore.update(applyCaptureRegions(
-    configStore.config,
-    questionRegion,
-    optionsRegion,
-  ))
+/** 保存完整答题区域并立即启动连续识别。 */
+async function completeCalibration(answerRegion: CaptureRegion): Promise<void> {
+  await configStore.update(applyAnswerRegion(configStore.config, answerRegion))
   calibrating.value = false
   controller.start()
 }
@@ -176,6 +167,29 @@ async function selectRemoteCandidate(candidate: RemoteAmbiguousCandidate): Promi
   await controller.selectCandidate(candidate, parsedQuestion.value)
 }
 
+/** 让浏览器先绘制点击反馈，再挂载数据量较大的题库页面。 */
+async function switchPage(page: 'recognition' | 'questionBank'): Promise<void> {
+  if (pageSwitching.value || activePage.value === page) return
+  pageSwitching.value = true
+  await nextTick()
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  activePage.value = page
+  await nextTick()
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+  pageSwitching.value = false
+}
+
+/** 打开题库维护页前停止捕获，避免后台识别继续运行。 */
+function openQuestionBank(): void {
+  stopCapture()
+  void switchPage('questionBank')
+}
+
+/** 返回实时识别页面。 */
+function closeQuestionBank(): void {
+  void switchPage('recognition')
+}
+
 const unsubscribeCaptureEnded = screenCapture.onCaptureEnded(handleCaptureEnded)
 
 onBeforeUnmount(() => {
@@ -189,44 +203,70 @@ onBeforeUnmount(() => {
 <template>
   <section class="dashboard">
     <header class="topbar">
-      <div>
-        <h1>xyq_helper</h1>
-        <p>纯前端识别，答案提示仅显示在浏览器窗口内。</p>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">答</span>
+        <div>
+          <h1>梦幻答题助手</h1>
+          <p>本地识别 · 答案不离开浏览器</p>
+        </div>
       </div>
       <div class="topbar-actions">
-        <span class="status-pill">{{ captureStore.status }}</span>
         <button
+          class="ghost-action"
           type="button"
-          :disabled="!selectedCategoryId || captureStore.status === 'requesting' || captureStore.status === 'active'"
-          @click="startCapture"
+          :disabled="pageSwitching"
+          @click="activePage === 'recognition' ? openQuestionBank() : closeQuestionBank()"
         >
-          连接游戏画面
+          {{ activePage === 'recognition' ? '题库维护' : '返回识别' }}
         </button>
-        <button
-          type="button"
-          :disabled="captureStore.status !== 'active' && captureStore.status !== 'requesting'"
-          @click="stopCapture"
-        >
-          停止
-        </button>
-        <button
-          type="button"
-          :disabled="captureStore.status !== 'active' || calibrating"
-          @click="controller.retry"
-        >
-          手动重试
-        </button>
-        <button
-          type="button"
-          :disabled="captureStore.status !== 'active' || calibrating"
-          @click="beginCalibration"
-        >
-          重新校准
-        </button>
+        <template v-if="activePage === 'recognition'">
+          <span class="status-pill" :data-status="captureStore.status">
+            <i />{{ captureStatusLabel }}
+          </span>
+          <button
+            class="primary-action"
+            type="button"
+            :disabled="!selectedCategoryId || captureStore.status === 'requesting' || captureStore.status === 'active'"
+            @click="startCapture"
+          >
+            连接游戏画面
+          </button>
+          <button
+            class="subtle-action"
+            type="button"
+            :disabled="captureStore.status !== 'active' && captureStore.status !== 'requesting'"
+            @click="stopCapture"
+          >
+            停止
+          </button>
+          <button
+            class="subtle-action"
+            type="button"
+            :disabled="captureStore.status !== 'active' || calibrating"
+            @click="controller.retry"
+          >
+            手动重试
+          </button>
+          <button
+            class="subtle-action"
+            type="button"
+            :disabled="captureStore.status !== 'active' || calibrating"
+            @click="beginCalibration"
+          >
+            重新校准
+          </button>
+        </template>
       </div>
     </header>
 
-    <div class="dashboard-grid">
+    <div v-if="pageSwitching" class="page-switch-feedback" role="status">
+      <span class="page-switch-spinner" />
+      {{ activePage === 'recognition' ? '正在打开题库…' : '正在返回识别…' }}
+    </div>
+
+    <QuestionBankManager v-if="activePage === 'questionBank'" @close="closeQuestionBank" />
+
+    <div v-else class="dashboard-grid">
       <CategorySelector :selected-id="selectedCategoryId" @select="selectCategory" />
 
       <main class="workspace">
@@ -234,8 +274,7 @@ onBeforeUnmount(() => {
         <CaptureCalibration
           v-if="calibrating && previewStream"
           :stream="previewStream"
-          :initial-question-region="configStore.config.capture.questionRegion"
-          :initial-options-region="configStore.config.capture.optionsRegion"
+          :initial-answer-region="calibratedAnswerRegion"
           @completed="completeCalibration"
           @cancel="cancelCalibration"
         />
@@ -243,54 +282,24 @@ onBeforeUnmount(() => {
           v-else
           :stream="previewStream"
           :frame="captureStore.lastFrame"
-        />
+          :question-region="calibratedAnswerRegion"
+        >
+          <AnswerOverlay
+            :result="matcherStore.result"
+            :candidates="displayedCandidates"
+            :parsed-question="parsedQuestion"
+            :message="recognitionStore.message"
+            @select="selectRemoteCandidate"
+          />
+        </CapturePreview>
       </main>
 
       <aside class="rightbar">
-        <section class="panel recognition-result-panel">
-          <h2>题目与答案</h2>
-          <article v-if="matcherStore.result" class="preview-question-answer-pair">
-            <p class="preview-matched-question">
-              <span class="preview-pair-label">题目</span>
-              <span
-                v-for="(segment, segmentIndex) in highlightQuestion(matcherStore.result.matchedQuestion)"
-                :key="segmentIndex"
-                :class="{ 'matched-keyword': segment.matched }"
-              >{{ segment.text }}</span>
-            </p>
-            <div class="preview-answer-value">
-              <strong><span class="preview-pair-label">答案</span>{{ matchedAnswerText || '暂无答案文本' }}</strong>
-              <span>{{ formatConfidence(matcherStore.result.confidence) }}</span>
-            </div>
-          </article>
-
-          <ol v-else-if="displayedCandidates.length" class="preview-candidate-list">
-            <li
-              v-for="(candidate, index) in displayedCandidates"
-              :key="`${candidate.question}-${index}`"
-            >
-              <p>
-                <span class="preview-pair-label">题目</span>
-                <span
-                  v-for="(segment, segmentIndex) in highlightQuestion(candidate.question)"
-                  :key="segmentIndex"
-                  :class="{ 'matched-keyword': segment.matched }"
-                >{{ segment.text }}</span>
-              </p>
-              <div>
-                <strong><span class="preview-pair-label">答案</span>{{ candidate.answerText }}</strong>
-                <span>{{ formatConfidence(candidate.confidence) }}</span>
-              </div>
-              <button type="button" @click="selectRemoteCandidate(candidate)">选择</button>
-            </li>
-          </ol>
-
-          <p v-else class="muted">{{ recognitionStore.message || '等待识别题目' }}</p>
-        </section>
         <OCRResult :result="ocrStore.lastResult" :parsed="parsedQuestion" />
         <section class="panel">
           <h2>状态</h2>
           <p>阶段：{{ recognitionStore.message }}</p>
+          <p>OCR 引擎：{{ ocrRuntimeLabel }}</p>
           <p v-if="matcherStore.result?.resultSource">来源：{{ matcherStore.result.resultSource }}</p>
           <p v-if="matcherStore.result?.durationMs">总耗时：{{ matcherStore.result.durationMs }}ms</p>
           <p v-if="matcherStore.result?.warning" class="warning-text">{{ matcherStore.result.warning }}</p>

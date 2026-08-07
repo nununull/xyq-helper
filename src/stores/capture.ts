@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { markRaw } from 'vue'
 import type { CaptureFrame, CaptureStatus } from '../types/capture'
 
 /** 将屏幕捕获异常转换为稳定的中文提示。 */
@@ -36,7 +37,8 @@ export const useCaptureStore = defineStore('capture', {
     },
     /** 记录最新的捕获帧。 */
     setFrame(frame: CaptureFrame) {
-      this.lastFrame = frame
+      // ImageData 体积较大且不需要响应式代理，只保留帧对象本身的替换通知。
+      this.lastFrame = markRaw(frame)
     },
   },
 })

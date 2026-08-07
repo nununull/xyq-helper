@@ -1,7 +1,7 @@
 import { openDB } from 'idb'
 import type { IDBPDatabase } from 'idb'
 import type { AppConfig } from '../types/config'
-import type { UnknownQuestion } from '../types/question'
+import type { UnknownQuestion, UserQuestionRecord } from '../types/question'
 import type { RemoteQuestionCache } from '../types/remoteQuestion'
 import { createRemoteQuestionCacheRepository } from '../features/remote-query/remoteQuestionCache'
 
@@ -79,4 +79,37 @@ export async function clearAllLocalData(): Promise<void> {
 export async function clearAllRemoteQuestionCache(): Promise<void> {
   const db = await dbPromise
   await createRemoteQuestionCacheRepository(db).clearAll()
+}
+
+/** 读取全部成功答案缓存，供题库维护页面审核和收录。 */
+export async function listRemoteQuestionCaches(): Promise<RemoteQuestionCache[]> {
+  const db = await dbPromise
+  return await db.getAll('remote_question_cache')
+}
+
+/** 读取全部人工新增和修订题目。 */
+export async function listUserQuestions(): Promise<UserQuestionRecord[]> {
+  const db = await dbPromise
+  return await db.getAll('user_questions')
+}
+
+/** 新增或更新一条人工题目，并返回数据库主键。 */
+export async function putUserQuestion(question: UserQuestionRecord): Promise<number> {
+  const db = await dbPromise
+  return await db.put('user_questions', question) as number
+}
+
+/** 删除一条人工题目或修订记录。 */
+export async function deleteUserQuestion(id: number): Promise<void> {
+  const db = await dbPromise
+  await db.delete('user_questions', id)
+}
+
+/** 以一次事务替换人工题库，供导入完整备份使用。 */
+export async function replaceUserQuestions(questions: UserQuestionRecord[]): Promise<void> {
+  const db = await dbPromise
+  const transaction = db.transaction('user_questions', 'readwrite')
+  await transaction.store.clear()
+  for (const question of questions) await transaction.store.put(question)
+  await transaction.done
 }

@@ -3,6 +3,7 @@ import type {
   OcrResultItem,
 } from '@paddleocr/paddleocr-js'
 import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.jsep.wasm?url'
+import { readonly, ref } from 'vue'
 import type { CaptureFrame } from '../types/capture'
 import type { AppConfig } from '../types/config'
 import type { OCRResult, OCRTextBlock } from '../types/ocr'
@@ -20,6 +21,14 @@ const ORT_WASM_PATHS = { wasm: ortWasmUrl } as unknown as string
 
 let engine: PaddleOCREngine | null = null
 let initialization: Promise<PaddleOCREngine> | null = null
+const runtimeMode = ref<'uninitialized' | 'worker' | 'main-thread' | 'error'>('uninitialized')
+
+interface OCRImageSurface {
+  source: HTMLCanvasElement
+  target: HTMLCanvasElement
+}
+
+const imageSurfaces: OCRImageSurface[] = []
 
 export function useOCR() {
   /** 初始化 PP-OCRv5 移动端模型。 */
@@ -35,18 +44,24 @@ export function useOCR() {
     const activeEngine = await getOrCreateEngine()
     const startedAt = performance.now()
     const scale = Math.max(1, ocrOptions.scale)
+    if (frame.answerImage) {
+      const [combinedResult] = await activeEngine.predict(
+        scaleImageForPaddle(frame.answerImage, scale, 0),
+        OCR_PARAMETERS,
+      )
+      const { questionItems, optionItems } = splitAnswerItems(combinedResult?.items ?? [])
+      return {
+        question: toTextBlockFromItems(questionItems),
+        options: toTextBlockFromItems(optionItems),
+        durationMs: Math.round(performance.now() - startedAt),
+      }
+    }
+
     const inputs = [
-      scaleImageForPaddle(frame.questionImage, scale),
-      scaleImageForPaddle(frame.optionsImage, scale),
+      scaleImageForPaddle(frame.questionImage, scale, 0),
+      scaleImageForPaddle(frame.optionsImage, scale, 1),
     ]
-    const [questionResult, optionsResult] = await activeEngine.predict(inputs, {
-      textDetLimitType: 'min',
-      textDetLimitSideLen: 320,
-      textDetThresh: 0.25,
-      textDetBoxThresh: 0.4,
-      textDetUnclipRatio: 1.6,
-      textRecScoreThresh: 0.25,
-    })
+    const [questionResult, optionsResult] = await activeEngine.predict(inputs, OCR_PARAMETERS)
 
     return {
       question: toTextBlock(questionResult),
@@ -60,6 +75,7 @@ export function useOCR() {
     const activeEngine = engine
     engine = null
     initialization = null
+    runtimeMode.value = 'uninitialized'
     await activeEngine?.dispose()
   }
 
@@ -67,6 +83,7 @@ export function useOCR() {
     initializeOCR,
     recognizeFrame,
     terminateOCR,
+    runtimeMode: readonly(runtimeMode),
   }
 }
 
@@ -76,6 +93,7 @@ async function getOrCreateEngine(): Promise<PaddleOCREngine> {
   if (!initialization) {
     initialization = createPaddleEngine().catch((error) => {
       initialization = null
+      runtimeMode.value = 'error'
       throw error
     })
   }
@@ -95,9 +113,7 @@ async function createPaddleEngine(): Promise<PaddleOCREngine> {
   ])
   // 模型内未使用的初始化器由 ORT 自动清理，仅隐藏不会影响推理结果的运行时警告。
   ort.env.logLevel = 'error'
-  return await PaddleOCR.create({
-    // 官方 0.4.x Worker 在部分 Vite 构建中无法正确加载其模块资源，先使用稳定的主线程管线。
-    worker: false,
+  const sharedOptions = {
     textDetectionModelName: DETECTION_MODEL,
     textDetectionModelAsset: {
       url: resolvePublicAsset(`${MODEL_DIRECTORY}/${DETECTION_MODEL}_onnx_infer.tar`),
@@ -116,7 +132,19 @@ async function createPaddleEngine(): Promise<PaddleOCREngine> {
       numThreads: 1,
       simd: true,
     },
-  })
+  } as const
+
+  try {
+    const workerEngine = await PaddleOCR.create({ ...sharedOptions, worker: true })
+    runtimeMode.value = 'worker'
+    return workerEngine
+  } catch (workerError) {
+    // 部分浏览器或静态服务器无法加载包内 module worker，自动降级以保证识别仍可使用。
+    console.warn('OCR Worker 初始化失败，已切换到主线程模式。', workerError)
+    const mainThreadEngine = await PaddleOCR.create({ ...sharedOptions, worker: false })
+    runtimeMode.value = 'main-thread'
+    return mainThreadEngine
+  }
 }
 
 /** 将 public 资源路径转换成绝对地址，确保工作线程不会相对 assets 目录取模型。 */
@@ -125,17 +153,23 @@ function resolvePublicAsset(path: string): string {
 }
 
 /** 保留游戏原始颜色，仅做高质量放大，避免二值化破坏描边字体。 */
-function scaleImageForPaddle(image: ImageData, scale: number): HTMLCanvasElement {
-  const source = document.createElement('canvas')
-  source.width = image.width
-  source.height = image.height
+function scaleImageForPaddle(
+  image: ImageData,
+  scale: number,
+  surfaceIndex: number,
+): HTMLCanvasElement {
+  const surface = getImageSurface(surfaceIndex)
+  const { source, target } = surface
+  if (source.width !== image.width) source.width = image.width
+  if (source.height !== image.height) source.height = image.height
   // PaddleOCR 会从输入画布回读像素，创建上下文时直接声明高频读取用途。
   source.getContext('2d', { willReadFrequently: true })?.putImageData(image, 0, 0)
 
   if (scale === 1) return source
-  const target = document.createElement('canvas')
-  target.width = Math.round(image.width * scale)
-  target.height = Math.round(image.height * scale)
+  const targetWidth = Math.round(image.width * scale)
+  const targetHeight = Math.round(image.height * scale)
+  if (target.width !== targetWidth) target.width = targetWidth
+  if (target.height !== targetHeight) target.height = targetHeight
   // 放大后的画布同样会被 OCR 管线通过 getImageData 读取。
   const context = target.getContext('2d', { willReadFrequently: true })
   if (!context) return source
@@ -145,13 +179,29 @@ function scaleImageForPaddle(image: ImageData, scale: number): HTMLCanvasElement
   return target
 }
 
+/** 按输入槽复用 OCR 画布，避免连续识别时频繁创建画布并触发垃圾回收。 */
+function getImageSurface(index: number): OCRImageSurface {
+  if (!imageSurfaces[index]) {
+    imageSurfaces[index] = {
+      source: document.createElement('canvas'),
+      target: document.createElement('canvas'),
+    }
+  }
+  return imageSurfaces[index]
+}
+
 /** 按画面纵向顺序整理识别行，并计算按字符数加权的整体置信度。 */
 function toTextBlock(result: PaddleResult | undefined): OCRTextBlock {
-  if (!result?.items.length) {
+  return toTextBlockFromItems(result?.items ?? [])
+}
+
+/** 将已分类的 OCR 文本行整理为展示和匹配所需的文本块。 */
+function toTextBlockFromItems(itemsSource: OcrResultItem[]): OCRTextBlock {
+  if (!itemsSource.length) {
     return { text: '', confidence: 0, lines: [] }
   }
 
-  const items = [...result.items].sort(compareReadingOrder)
+  const items = [...itemsSource].sort(compareReadingOrder)
   const weightedLength = items.reduce((total, item) => total + Math.max(1, item.text.length), 0)
   const confidence = items.reduce(
     (total, item) => total + item.score * Math.max(1, item.text.length),
@@ -166,6 +216,52 @@ function toTextBlock(result: PaddleResult | undefined): OCRTextBlock {
       confidence: item.score,
       polygon: item.poly,
     })),
+  }
+}
+
+const OCR_PARAMETERS = {
+  textDetLimitType: 'min',
+  textDetLimitSideLen: 320,
+  textDetThresh: 0.25,
+  textDetBoxThresh: 0.4,
+  textDetUnclipRatio: 1.6,
+  textRecScoreThresh: 0.25,
+}
+
+/** 将完整答题窗口中的文字行自动分为题干和选项。 */
+function splitAnswerItems(itemsSource: OcrResultItem[]): {
+  questionItems: OcrResultItem[]
+  optionItems: OcrResultItem[]
+} {
+  const items = [...itemsSource].sort(compareReadingOrder)
+  if (items.length <= 1) return { questionItems: items, optionItems: [] }
+
+  const markedOptionIndex = items.findIndex((item) => /^[A-DＡ-Ｄ][.。:：、\s]/i.test(item.text.trim()))
+  if (markedOptionIndex > 0) {
+    return {
+      questionItems: items.slice(0, markedOptionIndex),
+      optionItems: items.slice(markedOptionIndex),
+    }
+  }
+
+  const minimumBoundary = Math.max(1, items.length - 4)
+  const maximumBoundary = Math.max(minimumBoundary, items.length - 2)
+  let boundary = minimumBoundary
+  let largestGap = Number.NEGATIVE_INFINITY
+  for (let index = minimumBoundary; index <= maximumBoundary; index += 1) {
+    const upper = items[index - 1]
+    const lower = items[index]
+    if (!upper || !lower) continue
+    const gap = getPolygonCenter(lower.poly).y - getPolygonCenter(upper.poly).y
+      - (getPolygonHeight(upper.poly) + getPolygonHeight(lower.poly)) / 2
+    if (gap > largestGap) {
+      largestGap = gap
+      boundary = index
+    }
+  }
+  return {
+    questionItems: items.slice(0, boundary),
+    optionItems: items.slice(boundary),
   }
 }
 
