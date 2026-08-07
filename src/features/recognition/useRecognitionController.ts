@@ -38,7 +38,7 @@ import { queryRemoteQuestions } from '../remote-query/remoteQuestionClient'
 import { createQuestionStabilizer } from './questionStabilizer'
 import { createRecognitionRuntimeAdapters } from './recognitionRuntimeAdapters'
 
-const POLL_INTERVAL_MS = 500
+const POLL_INTERVAL_MS = 120
 const QUESTION_FAILURE_COOLDOWN_MS = 10_000
 const CATEGORY_RATE_LIMIT_COOLDOWN_MS = 60_000
 
@@ -582,6 +582,11 @@ export function createRecognitionController(
       resumeStableSnapshotIfReady()
       return
     }
+    if (lastStableFrameHash !== null) {
+      // 画面一变化就撤下旧答案并中止旧请求，避免上一题结果覆盖新题画面。
+      invalidateActiveSolve()
+      matcherStore.clear()
+    }
 
     matcherStore.setError('')
     recognitionStore.setPhase('capturing', '正在处理新的题目画面')
@@ -603,20 +608,14 @@ export function createRecognitionController(
     recognitionStore.setPhase('stabilizing', '正在确认题目稳定性')
     const parsed = parseQuestion(recognized)
     const stability = stabilizer.push(parsed)
-    if (stability.kind !== 'stable' && stability.kind !== 'forcedStable') {
+    const canUseCurrentFrame = parsed.normalizedQuestion.length >= 4
+      && Object.values(parsed.options).filter(Boolean).length >= 2
+    if (stability.kind !== 'stable' && stability.kind !== 'forcedStable' && !canUseCurrentFrame) {
       beginPendingQuestion()
       return
     }
-    const stable = stability.question
+    const stable = parsed
     const fingerprint = createQuestionFingerprint(stable.normalizedQuestion)
-    if (
-      activeFingerprint !== null
-      && fingerprint !== activeFingerprint
-      && stability.similarity <= 0.95
-    ) {
-      beginPendingQuestion()
-      return
-    }
 
     const ocrConfidence = (recognized.question.confidence + recognized.options.confidence) / 2
     lastStableFrameHash = captured.frameHash
@@ -624,6 +623,7 @@ export function createRecognitionController(
     lastStableSnapshot = { parsed: stable, ocrConfidence, frameHash: captured.frameHash }
     if (fingerprint !== activeFingerprint) {
       invalidateActiveSolve()
+      matcherStore.clear()
       activeFingerprint = fingerprint
     }
     const categoryId = getCategoryId()

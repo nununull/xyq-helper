@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { CaptureFrame, CaptureRegion } from '../types/capture'
 import type { MatchResult } from '../types/match'
+import type { OCRResult, OCRTextLine } from '../types/ocr'
 import type { RemoteAmbiguousCandidate } from '../types/remoteQuestion'
 
 const props = defineProps<{
@@ -12,6 +13,8 @@ const props = defineProps<{
   recognitionMessage: string
   recognizedQuestion: string
   optionsRegion: CaptureRegion | null
+  ocrResult: OCRResult | null
+  ocrScale: number
 }>()
 
 const emit = defineEmits<{
@@ -34,14 +37,52 @@ const answerBoxStyle = computed(() => {
 
   const optionIndex = ['A', 'B', 'C', 'D'].indexOf(answer)
   if (optionIndex < 0) return null
-  const rowHeight = region.height / 4
+  const row = locateAnswerRow(props.ocrResult?.options.lines ?? [], answer, region.height, props.ocrScale)
   return {
     left: `${region.x / metrics.sourceWidth * metrics.width}px`,
-    top: `${(region.y + optionIndex * rowHeight) / metrics.sourceHeight * metrics.height}px`,
+    top: `${(region.y + row.top) / metrics.sourceHeight * metrics.height}px`,
     width: `${region.width / metrics.sourceWidth * metrics.width}px`,
-    height: `${rowHeight / metrics.sourceHeight * metrics.height}px`,
+    height: `${row.height / metrics.sourceHeight * metrics.height}px`,
   }
 })
+
+/** 根据 OCR 选项行的真实纵向位置定位答案框，识别行不足时才按四行均分。 */
+function locateAnswerRow(
+  lines: OCRTextLine[],
+  answer: string,
+  regionHeight: number,
+  scale: number,
+): { top: number; height: number } {
+  const safeScale = Math.max(1, scale)
+  const ordered = lines
+    .filter((line) => line.polygon.length)
+    .map((line) => ({
+      line,
+      centerY: line.polygon.reduce((total, [, y]) => total + y, 0) / line.polygon.length / safeScale,
+    }))
+    .sort((left, right) => left.centerY - right.centerY)
+  const explicitIndex = ordered.findIndex(({ line }) => (
+    new RegExp(`^\\s*${answer}(?:[.。:：、\\s]|$)`, 'i').test(line.text)
+  ))
+  const answerIndex = explicitIndex >= 0
+    ? explicitIndex
+    : Math.min(['A', 'B', 'C', 'D'].indexOf(answer), ordered.length - 1)
+
+  if (ordered.length >= 2 && answerIndex >= 0) {
+    const center = ordered[answerIndex].centerY
+    const top = answerIndex === 0
+      ? Math.max(0, center - (ordered[1].centerY - center) / 2)
+      : (ordered[answerIndex - 1].centerY + center) / 2
+    const bottom = answerIndex === ordered.length - 1
+      ? Math.min(regionHeight, center + (center - ordered[answerIndex - 1].centerY) / 2)
+      : (center + ordered[answerIndex + 1].centerY) / 2
+    return { top, height: Math.max(1, bottom - top) }
+  }
+
+  const fallbackIndex = Math.max(0, ['A', 'B', 'C', 'D'].indexOf(answer))
+  const rowHeight = regionHeight / 4
+  return { top: fallbackIndex * rowHeight, height: rowHeight }
+}
 
 /** 将仍在运行的共享流绑定到预览视频。 */
 async function bindStream(): Promise<void> {
@@ -111,17 +152,11 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateVideoMetrics))
     </div>
     <div v-if="stream" class="capture-preview-stage">
       <video ref="video" muted playsinline @loadedmetadata="updateVideoMetrics" />
-      <div v-if="answerBoxStyle" class="preview-answer-box" :style="answerBoxStyle">
-        {{ result?.answer }}
-      </div>
+      <div v-if="answerBoxStyle" class="preview-answer-box" :style="answerBoxStyle" />
 
       <aside class="preview-answer-board" :class="{ empty: !hasAnswerContent }">
         <template v-if="result">
           <div class="preview-answer-title">识别答案</div>
-          <div class="preview-answer-value">
-            <strong>{{ result.answer || result.answerText }}</strong>
-            <span>{{ formatConfidence(result.confidence) }}</span>
-          </div>
           <p class="preview-matched-question">
             <span
               v-for="(segment, segmentIndex) in highlightQuestion(result.matchedQuestion)"
@@ -129,16 +164,16 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateVideoMetrics))
               :class="{ 'matched-keyword': segment.matched }"
             >{{ segment.text }}</span>
           </p>
+          <div class="preview-answer-value">
+            <strong>{{ result.answer || result.answerText }}</strong>
+            <span>{{ formatConfidence(result.confidence) }}</span>
+          </div>
         </template>
 
         <template v-if="candidates.length">
           <div class="preview-answer-title">候选答案</div>
           <ol class="preview-candidate-list">
             <li v-for="(candidate, index) in candidates" :key="`${candidate.question}-${index}`">
-              <div>
-                <strong>{{ candidate.answerText }}</strong>
-                <span>{{ formatConfidence(candidate.confidence) }}</span>
-              </div>
               <p>
                 <span
                   v-for="(segment, segmentIndex) in highlightQuestion(candidate.question)"
@@ -146,6 +181,10 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateVideoMetrics))
                   :class="{ 'matched-keyword': segment.matched }"
                 >{{ segment.text }}</span>
               </p>
+              <div>
+                <strong>{{ candidate.answerText }}</strong>
+                <span>{{ formatConfidence(candidate.confidence) }}</span>
+              </div>
               <button type="button" @click="emit('selectCandidate', candidate)">选择</button>
             </li>
           </ol>

@@ -209,6 +209,8 @@ onBeforeUnmount(() => {
           :recognition-message="recognitionStore.message"
           :recognized-question="parsedQuestion?.questionText ?? ''"
           :options-region="configStore.config.capture.optionsRegion"
+          :ocr-result="ocrStore.lastResult"
+          :ocr-scale="configStore.config.ocr.scale"
           @select-candidate="selectRemoteCandidate"
         />
         <OCRResult :result="ocrStore.lastResult" :parsed="parsedQuestion" />
