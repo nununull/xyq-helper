@@ -4,7 +4,6 @@ import CaptureCalibration from './CaptureCalibration.vue'
 import CapturePreview from './CapturePreview.vue'
 import CategorySelector from './CategorySelector.vue'
 import OCRResult from './OCRResult.vue'
-import RecognitionResultPanel from './RecognitionResultPanel.vue'
 import SettingsPanel from './SettingsPanel.vue'
 import UnknownQuestions from './UnknownQuestions.vue'
 import { useOCR } from '../composables/useOCR'
@@ -46,6 +45,45 @@ const actionHint = computed(() => {
 const parsedQuestion = computed(() => (
   ocrStore.lastResult ? parseQuestion(ocrStore.lastResult) : null
 ))
+const displayedCandidates = computed(() => (
+  matcherStore.remoteResults.length ? matcherStore.remoteResults : matcherStore.remoteCandidates
+))
+const matchedAnswerText = computed(() => {
+  const result = matcherStore.result
+  if (!result) return ''
+  const answerText = result.answerText?.trim()
+  if (answerText && answerText !== result.answer) return answerText
+  return result.answer ? (parsedQuestion.value?.options[result.answer] ?? '') : ''
+})
+
+/** 格式化候选答案置信度。 */
+function formatConfidence(confidence: number): string {
+  return `${Math.round(confidence * 100)}%`
+}
+
+/** 将候选题中与 OCR 题干重合的连续字符分段，供界面标红。 */
+function highlightQuestion(question: string): Array<{ text: string; matched: boolean }> {
+  const recognized = (parsedQuestion.value?.questionText ?? '').replace(/[^㐀-鿿0-9a-z]/gi, '')
+  if (recognized.length < 2) return [{ text: question, matched: false }]
+
+  const matchedIndexes = new Set<number>()
+  for (let index = 0; index < question.length - 1; index += 1) {
+    const pair = question.slice(index, index + 2)
+    if (/^[㐀-鿿0-9a-z]{2}$/i.test(pair) && recognized.includes(pair)) {
+      matchedIndexes.add(index)
+      matchedIndexes.add(index + 1)
+    }
+  }
+
+  const segments: Array<{ text: string; matched: boolean }> = []
+  for (let index = 0; index < question.length; index += 1) {
+    const matched = matchedIndexes.has(index)
+    const previous = segments.at(-1)
+    if (previous?.matched === matched) previous.text += question[index]
+    else segments.push({ text: question[index], matched })
+  }
+  return segments
+}
 
 /** 获取屏幕共享，并根据区域配置进入校准或连续识别。 */
 async function startCapture(): Promise<void> {
@@ -209,14 +247,46 @@ onBeforeUnmount(() => {
       </main>
 
       <aside class="rightbar">
-        <RecognitionResultPanel
-          :result="matcherStore.result"
-          :candidates="matcherStore.remoteResults.length ? matcherStore.remoteResults : matcherStore.remoteCandidates"
-          :recognition-message="recognitionStore.message"
-          :recognized-question="parsedQuestion?.questionText ?? ''"
-          :parsed-question="parsedQuestion"
-          @select-candidate="selectRemoteCandidate"
-        />
+        <section class="panel recognition-result-panel">
+          <h2>题目与答案</h2>
+          <article v-if="matcherStore.result" class="preview-question-answer-pair">
+            <p class="preview-matched-question">
+              <span class="preview-pair-label">题目</span>
+              <span
+                v-for="(segment, segmentIndex) in highlightQuestion(matcherStore.result.matchedQuestion)"
+                :key="segmentIndex"
+                :class="{ 'matched-keyword': segment.matched }"
+              >{{ segment.text }}</span>
+            </p>
+            <div class="preview-answer-value">
+              <strong><span class="preview-pair-label">答案</span>{{ matchedAnswerText || '暂无答案文本' }}</strong>
+              <span>{{ formatConfidence(matcherStore.result.confidence) }}</span>
+            </div>
+          </article>
+
+          <ol v-else-if="displayedCandidates.length" class="preview-candidate-list">
+            <li
+              v-for="(candidate, index) in displayedCandidates"
+              :key="`${candidate.question}-${index}`"
+            >
+              <p>
+                <span class="preview-pair-label">题目</span>
+                <span
+                  v-for="(segment, segmentIndex) in highlightQuestion(candidate.question)"
+                  :key="segmentIndex"
+                  :class="{ 'matched-keyword': segment.matched }"
+                >{{ segment.text }}</span>
+              </p>
+              <div>
+                <strong><span class="preview-pair-label">答案</span>{{ candidate.answerText }}</strong>
+                <span>{{ formatConfidence(candidate.confidence) }}</span>
+              </div>
+              <button type="button" @click="selectRemoteCandidate(candidate)">选择</button>
+            </li>
+          </ol>
+
+          <p v-else class="muted">{{ recognitionStore.message || '等待识别题目' }}</p>
+        </section>
         <OCRResult :result="ocrStore.lastResult" :parsed="parsedQuestion" />
         <section class="panel">
           <h2>状态</h2>
