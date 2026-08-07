@@ -45,6 +45,13 @@ const actionHint = computed(() => {
 const parsedQuestion = computed(() => (
   ocrStore.lastResult ? parseQuestion(ocrStore.lastResult) : null
 ))
+const matchedAnswerText = computed(() => {
+  const result = matcherStore.result
+  if (!result) return ''
+  const answerText = result.answerText?.trim()
+  if (answerText && answerText !== result.answer) return answerText
+  return result.answer ? (parsedQuestion.value?.options[result.answer] ?? '') : ''
+})
 
 /** 获取屏幕共享，并根据区域配置进入校准或连续识别。 */
 async function startCapture(): Promise<void> {
@@ -217,19 +224,10 @@ onBeforeUnmount(() => {
         <section class="panel">
           <h2>匹配结果</h2>
           <p v-if="!matcherStore.result" class="muted">暂无可靠答案。</p>
-          <template v-else>
-            <div class="answer-row">
-              <span
-                v-for="key in ['A', 'B', 'C', 'D']"
-                :key="key"
-                class="answer-key"
-                :class="{ active: matcherStore.result.answer === key }"
-              >
-                {{ key }}
-              </span>
-            </div>
-            <p>{{ matcherStore.result.matchedQuestion }}</p>
-          </template>
+          <article v-else class="matched-question-answer-pair">
+            <p><span>题目</span>{{ matcherStore.result.matchedQuestion }}</p>
+            <p class="matched-answer-text"><span>答案</span>{{ matchedAnswerText || '暂无答案文本' }}</p>
+          </article>
         </section>
       </main>
 

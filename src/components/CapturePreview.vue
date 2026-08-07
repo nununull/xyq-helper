@@ -4,6 +4,7 @@ import type { CaptureFrame, CaptureRegion } from '../types/capture'
 import type { MatchResult } from '../types/match'
 import type { OCRResult, OCRTextLine } from '../types/ocr'
 import type { RemoteAmbiguousCandidate } from '../types/remoteQuestion'
+import { parseQuestion } from '../utils/parseQuestion'
 
 const props = defineProps<{
   stream: MediaStream | null
@@ -25,6 +26,15 @@ const video = ref<HTMLVideoElement | null>(null)
 const videoMetrics = ref({ sourceWidth: 0, sourceHeight: 0, width: 0, height: 0 })
 const hasFrame = computed(() => Boolean(props.frame))
 const hasAnswerContent = computed(() => Boolean(props.result || props.candidates.length))
+const displayedAnswer = computed(() => {
+  const result = props.result
+  if (!result) return ''
+  const answerText = result.answerText?.trim()
+  if (answerText && answerText !== result.answer) return answerText
+  return result.answer && props.ocrResult
+    ? (parseQuestion(props.ocrResult).options[result.answer] ?? '')
+    : ''
+})
 const answerBoxStyle = computed(() => {
   const answer = props.result?.answer
   const region = props.optionsRegion
@@ -153,11 +163,14 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateVideoMetrics))
     <div v-if="stream" class="capture-preview-stage">
       <video ref="video" muted playsinline @loadedmetadata="updateVideoMetrics" />
       <div v-if="answerBoxStyle" class="preview-answer-box" :style="answerBoxStyle" />
+    </div>
 
-      <aside class="preview-answer-board" :class="{ empty: !hasAnswerContent }">
-        <template v-if="result">
-          <div class="preview-answer-title">识别答案</div>
+    <aside v-if="stream" class="preview-answer-board" :class="{ empty: !hasAnswerContent }">
+      <template v-if="result">
+        <div class="preview-answer-title">匹配结果</div>
+        <article class="preview-question-answer-pair">
           <p class="preview-matched-question">
+            <span class="preview-pair-label">题目</span>
             <span
               v-for="(segment, segmentIndex) in highlightQuestion(result.matchedQuestion)"
               :key="segmentIndex"
@@ -165,16 +178,18 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateVideoMetrics))
             >{{ segment.text }}</span>
           </p>
           <div class="preview-answer-value">
-            <strong>{{ result.answer || result.answerText }}</strong>
+            <strong><span class="preview-pair-label">答案</span>{{ displayedAnswer || '暂无答案文本' }}</strong>
             <span>{{ formatConfidence(result.confidence) }}</span>
           </div>
-        </template>
+        </article>
+      </template>
 
-        <template v-if="candidates.length">
-          <div class="preview-answer-title">候选答案</div>
-          <ol class="preview-candidate-list">
-            <li v-for="(candidate, index) in candidates" :key="`${candidate.question}-${index}`">
+      <template v-else-if="candidates.length">
+        <div class="preview-answer-title">候选答案</div>
+        <ol class="preview-candidate-list">
+          <li v-for="(candidate, index) in candidates" :key="`${candidate.question}-${index}`">
               <p>
+                <span class="preview-pair-label">题目</span>
                 <span
                   v-for="(segment, segmentIndex) in highlightQuestion(candidate.question)"
                   :key="segmentIndex"
@@ -182,20 +197,19 @@ onBeforeUnmount(() => window.removeEventListener('resize', updateVideoMetrics))
                 >{{ segment.text }}</span>
               </p>
               <div>
-                <strong>{{ candidate.answerText }}</strong>
+                <strong><span class="preview-pair-label">答案</span>{{ candidate.answerText }}</strong>
                 <span>{{ formatConfidence(candidate.confidence) }}</span>
               </div>
               <button type="button" @click="emit('selectCandidate', candidate)">选择</button>
-            </li>
-          </ol>
-        </template>
+          </li>
+        </ol>
+      </template>
 
-        <template v-if="!result && !candidates.length">
-          <div class="preview-answer-title">正在识别</div>
-          <p>{{ recognitionMessage }}</p>
-        </template>
-      </aside>
-    </div>
+      <template v-else>
+        <div class="preview-answer-title">正在识别</div>
+        <p>{{ recognitionMessage }}</p>
+      </template>
+    </aside>
     <p v-else class="muted">暂无共享画面，请先连接游戏窗口。</p>
   </section>
 </template>
