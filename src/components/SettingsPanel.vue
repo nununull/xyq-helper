@@ -21,6 +21,11 @@ async function persistCaptureFps(): Promise<void> {
   await configStore.setCaptureFps(configStore.config.capture.captureFps)
 }
 
+/** 保存语音播报开关。 */
+async function persistSpeechEnabled(): Promise<void> {
+  await configStore.setSpeechEnabled(configStore.config.overlay.speechEnabled)
+}
+
 /** 在持久化缓存清理成功后废弃内存快照与展示结果。 */
 function invalidateClearedCache(): void {
   recognitionStore.invalidateRemoteCache()
@@ -81,6 +86,17 @@ async function clearRemoteCache(): Promise<void> {
     <label>
       最小置信度
       <input v-model.number="configStore.config.matcher.minConfidence" min="0" max="1" step="0.05" type="number" />
+    </label>
+    <label class="toggle-setting">
+      <span>
+        语音播报答案
+        <small>识别到新答案时播报选项与答案文本</small>
+      </span>
+      <input
+        v-model="configStore.config.overlay.speechEnabled"
+        type="checkbox"
+        @change="persistSpeechEnabled"
+      />
     </label>
     <div class="cache-actions">
       <button type="button" :disabled="!selectedCategoryId" @click="clearSelectedCategoryCache">

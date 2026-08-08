@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, shallowRef } from 'vue'
+import { computed, nextTick, onBeforeUnmount, shallowRef, watch } from 'vue'
 import CaptureCalibration from './CaptureCalibration.vue'
 import CapturePreview from './CapturePreview.vue'
 import AnswerOverlay from './AnswerOverlay.vue'
@@ -21,6 +21,8 @@ import type { RemoteAmbiguousCandidate } from '../types/remoteQuestion'
 import { applyAnswerRegion } from '../features/setup/applyCaptureRegion'
 import { hasValidCaptureRegions } from '../types/config'
 import type { CaptureRegion } from '../types/capture'
+import { activityCategoryGroups } from '../data/activityCategories'
+import { useAnswerPictureInPicture } from '../composables/useAnswerPictureInPicture'
 
 const captureStore = useCaptureStore()
 const configStore = useConfigStore()
@@ -30,6 +32,7 @@ const recognitionStore = useRecognitionStore()
 const screenCapture = useScreenCapture()
 const ocr = useOCR()
 const controller = useRecognitionController()
+const answerPictureInPicture = useAnswerPictureInPicture()
 const previewStream = shallowRef<MediaStream | null>(null)
 const calibrating = shallowRef(false)
 const focusMode = shallowRef(false)
@@ -52,6 +55,13 @@ const captureStatusLabel = computed(() => ({
 }[captureStore.status] ?? captureStore.status))
 
 const selectedCategoryId = computed(() => configStore.config.remoteQuery.categoryId)
+const selectedCategoryName = computed(() => {
+  for (const group of activityCategoryGroups) {
+    const category = group.categories.find((item) => item.id === selectedCategoryId.value)
+    if (category) return category.name
+  }
+  return ''
+})
 const hasCalibration = computed(() => hasValidCaptureRegions(configStore.config.capture))
 const calibratedAnswerRegion = computed(() => {
   const capture = configStore.config.capture
@@ -71,12 +81,12 @@ const calibratedAnswerRegion = computed(() => {
 })
 const actionHint = computed(() => {
   if (!selectedCategoryId.value) return '请先选择左侧活动分类，再连接游戏画面。'
-  if (captureStore.status === 'requesting') return '正在等待浏览器共享授权，请在弹出的窗口中选择游戏窗口。'
+  if (captureStore.status === 'requesting') return `已选择「${selectedCategoryName.value}」，正在等待浏览器共享授权。`
   if (calibrating.value) return '请在下方实时画面中依次框选题干和选项。'
   if (captureStore.status === 'active') return '游戏画面已连接，连续识别正在运行。'
   return hasCalibration.value
-    ? '点击“连接游戏画面”，授权成功后会自动开始识别。'
-    : '点击“连接游戏画面”，授权后先完成一次区域校准。'
+    ? `已选择「${selectedCategoryName.value}」，点击“连接游戏画面”开始识别。`
+    : `已选择「${selectedCategoryName.value}」，连接游戏画面后请先完成区域校准。`
 })
 const parsedQuestion = computed(() => (
   ocrStore.lastResult ? parseQuestion(ocrStore.lastResult) : null
@@ -84,6 +94,33 @@ const parsedQuestion = computed(() => (
 const displayedCandidates = computed(() => (
   matcherStore.remoteResults.length ? matcherStore.remoteResults : matcherStore.remoteCandidates
 ))
+
+/** 播报新识别出的确定答案，避免用户频繁把视线移出游戏画面。 */
+function speakAnswer(): void {
+  const result = matcherStore.result
+  if (!configStore.config.overlay.speechEnabled || !result || !('speechSynthesis' in window)) return
+
+  const optionText = result.answerText?.trim()
+    || (result.answer ? parsedQuestion.value?.options[result.answer] : '')
+    || ''
+  const answerText = [result.answer ? `答案 ${result.answer}` : '答案', optionText]
+    .filter(Boolean)
+    .join('，')
+  const utterance = new SpeechSynthesisUtterance(answerText)
+  utterance.lang = 'zh-CN'
+  utterance.rate = 1.12
+  window.speechSynthesis.cancel()
+  window.speechSynthesis.speak(utterance)
+}
+
+watch(
+  () => matcherStore.result
+    ? `${matcherStore.result.questionId}:${matcherStore.result.answer}:${matcherStore.result.answerText ?? ''}`
+    : '',
+  (signature, previousSignature) => {
+    if (signature && signature !== previousSignature) speakAnswer()
+  },
+)
 /** 获取屏幕共享，并根据区域配置进入校准或连续识别。 */
 async function startCapture(): Promise<void> {
   if (
@@ -208,6 +245,7 @@ onBeforeUnmount(() => {
   unsubscribeCaptureEnded()
   controller.stop()
   screenCapture.stopCapture()
+  window.speechSynthesis?.cancel()
   void ocr.terminateOCR()
 })
 </script>
@@ -232,9 +270,31 @@ onBeforeUnmount(() => {
           {{ activePage === 'recognition' ? '题库维护' : '返回识别' }}
         </button>
         <template v-if="activePage === 'recognition'">
+          <span
+            v-if="selectedCategoryName"
+            :key="selectedCategoryId"
+            class="selected-category-pill"
+            title="当前活动分类"
+          >
+            <small>当前活动</small>
+            <strong>{{ selectedCategoryName }}</strong>
+          </span>
           <span class="status-pill" :data-status="captureStore.status">
             <i />{{ captureStatusLabel }}
           </span>
+          <button
+            class="floating-answer-action"
+            :class="{ active: answerPictureInPicture.opened.value }"
+            type="button"
+            :aria-pressed="answerPictureInPicture.opened.value"
+            :disabled="!answerPictureInPicture.supported"
+            :title="answerPictureInPicture.supported
+              ? '打开始终置顶的小窗，可拖到游戏答题区域旁边'
+              : '请使用最新版 Chrome 或 Edge'"
+            @click="answerPictureInPicture.toggle"
+          >
+            {{ answerPictureInPicture.opened.value ? '关闭悬浮' : '悬浮答案' }}
+          </button>
           <button
             class="focus-action"
             :class="{ active: focusMode }"
@@ -333,5 +393,22 @@ onBeforeUnmount(() => {
         <UnknownQuestions />
       </aside>
     </div>
+
+    <Teleport v-if="answerPictureInPicture.mountTarget.value" :to="answerPictureInPicture.mountTarget.value">
+      <div class="floating-answer-shell">
+        <AnswerOverlay
+          compact
+          :result="matcherStore.result"
+          :candidates="displayedCandidates"
+          :parsed-question="parsedQuestion"
+          :message="recognitionStore.message"
+          @select="selectRemoteCandidate"
+        />
+      </div>
+    </Teleport>
+
+    <p v-if="answerPictureInPicture.error.value" class="floating-answer-error" role="alert">
+      {{ answerPictureInPicture.error.value }}
+    </p>
   </section>
 </template>

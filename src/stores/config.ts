@@ -36,5 +36,11 @@ export const useConfigStore = defineStore('config', {
       nextConfig.remoteQuery.categoryId = categoryId
       await this.update(nextConfig)
     },
+    /** 更新答案语音播报开关并立即持久化。 */
+    async setSpeechEnabled(speechEnabled: boolean) {
+      const nextConfig = structuredClone(toRaw(this.config))
+      nextConfig.overlay.speechEnabled = speechEnabled
+      await this.update(nextConfig)
+    },
   },
 })

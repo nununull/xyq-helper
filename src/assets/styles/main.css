@@ -229,6 +229,18 @@ textarea:focus {
   color: var(--success);
 }
 
+.floating-answer-action {
+  border-color: rgb(82 211 156 / 25%);
+  background: rgb(82 211 156 / 6%);
+  color: var(--success);
+}
+
+.floating-answer-action.active {
+  border-color: rgb(82 211 156 / 55%);
+  background: rgb(82 211 156 / 14%);
+  box-shadow: 0 0 18px rgb(82 211 156 / 12%);
+}
+
 .status-pill {
   display: inline-flex;
   align-items: center;
@@ -243,6 +255,42 @@ textarea:focus {
   color: var(--success);
   font-size: 12px;
   font-weight: 600;
+}
+
+.selected-category-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 220px;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid rgb(232 184 93 / 30%);
+  border-radius: 10px;
+  background: rgb(232 184 93 / 8%);
+  color: var(--primary-strong);
+  animation: selected-category-enter 280ms ease-out;
+}
+
+.selected-category-pill small {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.selected-category-pill strong {
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes selected-category-enter {
+  from {
+    border-color: rgb(232 184 93 / 70%);
+    background: rgb(232 184 93 / 18%);
+    transform: translateY(-2px);
+  }
 }
 
 .status-pill i {
@@ -685,13 +733,25 @@ textarea:focus {
 
 .overlay-answer {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto auto 1fr auto;
   align-items: center;
   gap: 9px;
   padding: 10px 11px;
   border: 1px solid rgb(82 211 156 / 13%);
   border-radius: 8px;
   background: rgb(82 211 156 / 7%);
+}
+
+.overlay-answer-key {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--success);
+  color: #07120e;
+  font-size: 20px;
+  line-height: 1;
 }
 
 .overlay-answer > span {
@@ -709,6 +769,96 @@ textarea:focus {
 .overlay-candidates small {
   color: var(--success);
   font-size: 10px;
+}
+
+.floating-answer-shell {
+  height: 100%;
+  padding: 8px;
+  background:
+    radial-gradient(circle at 10% 0%, rgb(82 211 156 / 10%), transparent 18rem),
+    var(--bg);
+}
+
+.floating-answer-shell .answer-overlay {
+  height: 100%;
+  padding: 12px;
+  border-color: rgb(82 211 156 / 45%);
+}
+
+.floating-answer-shell .answer-overlay-title {
+  padding-bottom: 7px;
+}
+
+.floating-answer-shell .answer-overlay.compact .overlay-question {
+  display: none;
+}
+
+.floating-answer-shell .overlay-result {
+  display: grid;
+  height: calc(100% - 28px);
+  align-items: center;
+}
+
+.floating-answer-shell .overlay-answer {
+  grid-template-columns: auto 48px minmax(0, 1fr) auto;
+  padding: 13px;
+}
+
+.floating-answer-shell .overlay-answer-key {
+  width: 48px;
+  height: 48px;
+  font-size: 30px;
+}
+
+.floating-answer-shell .overlay-answer strong {
+  overflow: hidden;
+  font-size: 24px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.floating-answer-shell .overlay-waiting {
+  display: grid;
+  min-height: 90px;
+  place-items: center;
+  margin: 0;
+  color: var(--muted);
+  font-size: 16px;
+}
+
+.floating-answer-error {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 80;
+  max-width: 420px;
+  margin: 0;
+  padding: 11px 14px;
+  border: 1px solid rgb(240 115 115 / 35%);
+  border-radius: 10px;
+  background: rgb(54 19 19 / 96%);
+  box-shadow: var(--shadow);
+  color: #ffaaaa;
+}
+
+.settings-panel .toggle-setting {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.toggle-setting > span {
+  display: grid;
+  gap: 2px;
+}
+
+.toggle-setting input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  accent-color: var(--success);
 }
 
 .overlay-candidates {

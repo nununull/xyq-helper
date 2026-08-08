@@ -3,12 +3,15 @@ import type { MatchResult } from '../types/match'
 import type { ParsedQuestion } from '../types/question'
 import type { RemoteAmbiguousCandidate } from '../types/remoteQuestion'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   result: MatchResult | null
   candidates: RemoteAmbiguousCandidate[]
   parsedQuestion: ParsedQuestion | null
   message: string
-}>()
+  compact?: boolean
+}>(), {
+  compact: false,
+})
 
 const emit = defineEmits<{
   select: [candidate: RemoteAmbiguousCandidate]
@@ -54,7 +57,7 @@ function highlightQuestion(question: string): Array<{ text: string; matched: boo
 </script>
 
 <template>
-  <aside class="answer-overlay" aria-live="polite">
+  <aside class="answer-overlay" :class="{ compact }" aria-live="polite">
     <div class="answer-overlay-title">
       <span class="answer-overlay-dot" />
       题目与答案
@@ -70,6 +73,7 @@ function highlightQuestion(question: string): Array<{ text: string; matched: boo
       </p>
       <div class="overlay-answer">
         <span>答案</span>
+        <b v-if="result.answer" class="overlay-answer-key">{{ result.answer }}</b>
         <strong>{{ getAnswerText() || '暂无答案文本' }}</strong>
         <small>{{ formatConfidence(result.confidence) }}</small>
       </div>

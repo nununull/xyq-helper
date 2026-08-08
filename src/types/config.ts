@@ -27,6 +27,7 @@ export interface AppConfig {
     opacity: number
     autoHideMs: number
     fontSize: 'medium' | 'large' | 'extra-large'
+    speechEnabled: boolean
   }
 }
 
@@ -56,6 +57,7 @@ export const defaultAppConfig: AppConfig = {
     opacity: 0.88,
     autoHideMs: 10_000,
     fontSize: 'large',
+    speechEnabled: false,
   },
 }
 

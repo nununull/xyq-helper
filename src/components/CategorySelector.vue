@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { activityCategoryGroups } from '../data/activityCategories'
 import { filterCategoryGroups } from '../features/categories/filterCategoryGroups'
 
-defineProps<{
+const props = defineProps<{
   selectedId: string
 }>()
 
@@ -18,6 +18,17 @@ const totalCount = activityCategoryGroups.reduce(
   0,
 )
 const visibleGroups = computed(() => filterCategoryGroups(activityCategoryGroups, keyword.value))
+
+/** 自动展开当前分类所在分组，确保已选项始终可见。 */
+function revealSelectedCategory(categoryId: string): void {
+  const selectedGroup = activityCategoryGroups.find((group) => (
+    group.categories.some((category) => category.id === categoryId)
+  ))
+  if (!selectedGroup) return
+  expandedGroups.value = new Set([...expandedGroups.value, selectedGroup.name])
+}
+
+watch(() => props.selectedId, revealSelectedCategory, { immediate: true })
 
 /** 判断分类组是否展开；搜索时自动展示所有命中结果。 */
 function isExpanded(groupName: string): boolean {
