@@ -1,4 +1,5 @@
 import { diceSimilarity, normalizeQuestionText } from '../../utils/normalizeText'
+import { tokenizeChineseQuery } from './chineseTokenizer'
 
 const genericWords = new Set([
   '以下', '下列', '哪个', '哪种', '哪项', '哪位', '什么', '正确', '错误', '属于',
@@ -12,7 +13,7 @@ const questionScaffolds = [
 ]
 const searchTokenPattern = /[a-z0-9]+(?:[._+-][a-z0-9]+)*|[㐀-鿿]/giu
 const weakInformationCharacters = new Set('的是了在和与或为有中上下列以哪什么谁否吗呢项个种位说法正确错误属于关于')
-const maximumProgressiveQueryCount = 7
+const maximumProgressiveQueryCount = 5
 
 export interface SimilarQuestionEntry<T> {
   normalizedQuestion: string
@@ -66,58 +67,81 @@ export function createCompactRemoteQueryText(text: string, maximumLength = 14): 
  * 先用完整题干精确收窄结果，再使用多个高信息连续片段容忍 OCR 错字。
  * 远程接口只返回有限的前排结果，不能先用单个宽泛词召回几百道题。
  */
-export function createProgressiveRemoteQueries(text: string, maximumLength = 8): string[] {
+export async function createProgressiveRemoteQueries(
+  text: string,
+  maximumLength = 10,
+): Promise<string[]> {
   const cleaned = cleanRemoteQueryText(text)
   const compact = tokenizeSearchText(cleaned).join('')
   if (!compact) return []
 
   const queries: string[] = []
-  appendUniqueQuery(queries, cleaned)
-  appendUniqueQuery(queries, compact)
+  const normalizedQueries = new Set<string>()
+  appendUniqueQuery(queries, normalizedQueries, cleaned)
 
-  for (const window of selectDiscriminativeWindows(compact, maximumLength, 4)) {
-    appendUniqueQuery(queries, window)
+  const words = await tokenizeChineseQuery(cleaned)
+  for (const phrase of selectDiscriminativePhrases(words, maximumLength, 3)) {
+    appendUniqueQuery(queries, normalizedQueries, phrase)
   }
 
   // 最后才使用单个实体词兜底，避免宽查询返回的前 20 条淹没正确题目。
-  appendUniqueQuery(queries, selectFallbackKeyword(cleaned))
+  appendUniqueQuery(queries, normalizedQueries, selectFallbackKeyword(cleaned))
   return queries.slice(0, maximumProgressiveQueryCount)
 }
 
-/** 添加非空且未出现过的查询，保持查询优先级稳定。 */
-function appendUniqueQuery(queries: string[], query: string | null): void {
+/** 按标准化检索语义去重，避免标点和空格差异浪费请求。 */
+function appendUniqueQuery(
+  queries: string[],
+  normalizedQueries: Set<string>,
+  query: string | null,
+): void {
   const value = query?.trim()
-  if (value && !queries.includes(value)) queries.push(value)
+  if (!value) return
+
+  const normalized = normalizeQuestionText(value)
+  if (!normalized || normalizedQueries.has(normalized)) return
+
+  normalizedQueries.add(normalized)
+  queries.push(value)
 }
 
 /**
- * 从题干选择彼此尽量分散的连续高信息窗口。
- * 连续窗口可被远程题干直接命中，多个窗口则能绕开任意位置的一两个 OCR 错字。
+ * 沿自然词边界生成多尺度连续短语，并选择彼此分散的高信息候选。
+ * 保持连续子串兼容远端模糊搜索，同时避免固定字符窗口切断实体词。
  */
-function selectDiscriminativeWindows(
-  text: string,
+function selectDiscriminativePhrases(
+  words: string[],
   maximumLength: number,
   limit: number,
 ): string[] {
-  const tokens = tokenizeSearchText(text)
-  const windowLength = Math.min(Math.max(4, maximumLength), tokens.length)
-  if (tokens.length <= windowLength) return [text]
+  const normalizedWords = words
+    .map((word) => normalizeQuestionText(word))
+    .filter(Boolean)
+  const textLength = normalizedWords.join('').length
+  const upperLength = Math.max(6, maximumLength)
+  const lowerLength = Math.min(5, upperLength)
+  const candidates: Array<{ value: string; start: number; end: number; score: number }> = []
 
-  const candidates: Array<{ value: string; start: number; score: number }> = []
-  for (let start = 0; start <= tokens.length - windowLength; start += 1) {
-    const value = tokens.slice(start, start + windowLength).join('')
-    candidates.push({
-      value,
-      start,
-      score: scoreQueryWindow(value, start, windowLength, tokens.length),
-    })
+  for (let start = 0; start < normalizedWords.length; start += 1) {
+    let value = ''
+    for (let end = start; end < normalizedWords.length; end += 1) {
+      value += normalizedWords[end]
+      if (value.length > upperLength) break
+      if (value.length < lowerLength) continue
+      candidates.push({
+        value,
+        start,
+        end: end + 1,
+        score: scoreQueryPhrase(value, start, end + 1, normalizedWords, textLength),
+      })
+    }
   }
   candidates.sort((left, right) => right.score - left.score || left.start - right.start)
 
   const selected: typeof candidates = []
   for (const candidate of candidates) {
     const overlapsHeavily = selected.some((current) => (
-      Math.abs(current.start - candidate.start) < Math.ceil(windowLength / 2)
+      calculateRangeOverlap(candidate.start, candidate.end, current.start, current.end) >= 0.6
     ))
     if (overlapsHeavily) continue
     selected.push(candidate)
@@ -127,11 +151,12 @@ function selectDiscriminativeWindows(
   return selected.map((candidate) => candidate.value)
 }
 
-/** 依据实词密度、数字和英文专名为连续查询窗口评分。 */
-function scoreQueryWindow(
+/** 依据实词密度、自然词完整度和题干位置为连续查询短语评分。 */
+function scoreQueryPhrase(
   value: string,
   start: number,
-  windowLength: number,
+  end: number,
+  words: string[],
   textLength: number,
 ): number {
   let score = 0
@@ -141,10 +166,25 @@ function scoreQueryWindow(
     else score -= 1
   }
   if (/[㐀-鿿]{2,}/.test(value)) score += 2
+  for (const word of words.slice(start, end)) {
+    if (word.length >= 2 && isUsefulKeyword(word)) score += Math.min(word.length, 4) * 1.5
+  }
   // 轻微偏向题干中部，避免总是取到“以下哪个”等固定开头或语气结尾。
-  const center = start + windowLength / 2
+  const prefixLength = words.slice(0, start).join('').length
+  const center = prefixLength + value.length / 2
   score -= Math.abs(center - textLength / 2) / Math.max(1, textLength)
   return score
+}
+
+/** 计算两个词元区间相对较短区间的重叠比例。 */
+function calculateRangeOverlap(
+  leftStart: number,
+  leftEnd: number,
+  rightStart: number,
+  rightEnd: number,
+): number {
+  const overlap = Math.max(0, Math.min(leftEnd, rightEnd) - Math.max(leftStart, rightStart))
+  return overlap / Math.max(1, Math.min(leftEnd - leftStart, rightEnd - rightStart))
 }
 
 /** 将连续英文、数字及常见版本连接符合并为不可拆分的搜索单元。 */

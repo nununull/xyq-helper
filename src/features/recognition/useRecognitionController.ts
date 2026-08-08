@@ -23,7 +23,7 @@ import type {
   RemoteQuestionCandidate,
   RemoteQuestionCache,
 } from '../../types/remoteQuestion'
-import { diceSimilarity } from '../../utils/normalizeText'
+import { diceSimilarity, normalizeQuestionText } from '../../utils/normalizeText'
 import { parseQuestion } from '../../utils/parseQuestion'
 import { findLikelyQuestionText, matchQuestion } from '../../utils/matcher'
 import {
@@ -44,6 +44,8 @@ import { createRecognitionRuntimeAdapters } from './recognitionRuntimeAdapters'
 const POLL_INTERVAL_MS = 120
 const QUESTION_FAILURE_COOLDOWN_MS = 10_000
 const CATEGORY_RATE_LIMIT_COOLDOWN_MS = 60_000
+const MAXIMUM_REMOTE_QUERY_COUNT = 6
+const REMOTE_QUERY_BUDGET_MS = 4_500
 const SAME_QUESTION_SIMILARITY = 0.95
 
 interface RecognitionStorePort {
@@ -441,8 +443,11 @@ export function createRecognitionController(
       lastUsedAt: cachedAt,
       hitCount: 1,
     }
-    await writeCache(cacheRecord)
-    if (!canPublish(context)) return
+    const shouldPersist = decision.kind === 'confident' && best.answer !== null
+    if (shouldPersist) {
+      await writeCache(cacheRecord)
+      if (!canPublish(context)) return
+    }
 
     const durationMs = Math.max(0, Math.round(performance.now() - startedAt))
     const warning = decision.kind === 'lowConfidence' ? '匹配置信度较低，请核对答案' : undefined
@@ -461,10 +466,12 @@ export function createRecognitionController(
     recognitionStore.setOutcome('remote', durationMs)
     recognitionStore.setLastCompletedFingerprint(fingerprint)
     recognitionStore.setLastCompletedQuestion(parsed.normalizedQuestion)
-    lastCompletedCache = {
-      normalizedQuestion: parsed.normalizedQuestion,
-      value: cacheRecord,
-    }
+    lastCompletedCache = shouldPersist
+      ? {
+          normalizedQuestion: parsed.normalizedQuestion,
+          value: cacheRecord,
+        }
+      : null
     snapshotRetryPending = false
     recognitionStore.setPhase('showingAnswer', warning ?? '已找到远程答案')
   }
@@ -529,9 +536,9 @@ export function createRecognitionController(
       }
 
       const correctedQuestion = correctRemoteQuery?.(parsed)
-      const recognizedQueries = createProgressiveRemoteQueries(parsed.questionText)
+      const recognizedQueries = await createProgressiveRemoteQueries(parsed.questionText)
       const correctedQueries = correctedQuestion
-        ? createProgressiveRemoteQueries(correctedQuestion)
+        ? await createProgressiveRemoteQueries(correctedQuestion)
         : []
       const queryTerms = [
         ...recognizedQueries.slice(0, 2),
@@ -539,13 +546,19 @@ export function createRecognitionController(
         ...recognizedQueries.slice(2),
         ...correctedQueries.slice(2),
       ]
-        .filter((queryText, index, all) => all.indexOf(queryText) === index)
-        .slice(0, 10)
+        .filter((queryText, index, all) => (
+          all.findIndex((current) => (
+            normalizeQuestionText(current) === normalizeQuestionText(queryText)
+          )) === index
+        ))
+        .slice(0, MAXIMUM_REMOTE_QUERY_COUNT)
       let decision: RemoteMatchDecision = rankRemoteCandidates(parsed, [], ocrConfidence)
       const accumulatedCandidates = new Map<string, RemoteQuestionCandidate>()
+      const remoteQueryStartedAt = now()
       matcherStore.setRemoteResults?.([])
 
       for (const [index, queryText] of queryTerms.entries()) {
+        if (index > 0 && now() - remoteQueryStartedAt >= REMOTE_QUERY_BUDGET_MS) break
         const phase = index === 0 ? 'primaryQuery' : 'fallbackQuery'
         recognitionStore.setPhase(
           phase,
@@ -572,7 +585,10 @@ export function createRecognitionController(
           answerText: candidate.answerText,
           confidence: candidate.confidence,
         })))
-        if (decision.kind === 'confident' || decision.kind === 'lowConfidence') break
+        const runnerUp = decision.candidates[1]
+        const hasDecisiveLead = !runnerUp
+          || (decision.best?.confidence ?? 0) - runnerUp.confidence >= 0.08
+        if (decision.kind === 'confident' && decision.best?.answer && hasDecisiveLead) break
       }
 
       recognitionStore.setPhase('matching', '正在匹配候选题')
