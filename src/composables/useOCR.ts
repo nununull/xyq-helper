@@ -2,22 +2,25 @@ import type {
   OcrResult as PaddleResult,
   OcrResultItem,
 } from '@paddleocr/paddleocr-js'
-import ortWasmUrl from 'onnxruntime-web/ort-wasm-simd-threaded.jsep.wasm?url'
 import { readonly, ref } from 'vue'
 import type { CaptureFrame } from '../types/capture'
 import type { AppConfig } from '../types/config'
 import type { OCRResult, OCRTextBlock } from '../types/ocr'
+import {
+  inspectOCRAssets,
+  markOCRPreparationError,
+  prepareOCRAssets,
+  setOCRPreparationPhase,
+  useOCRAssetLoader,
+} from './useOCRAssetLoader'
 
 interface PaddleOCREngine {
   predict(input: unknown, params?: Record<string, unknown>): Promise<PaddleResult[]>
   dispose(): Promise<void>
 }
 
-const MODEL_DIRECTORY = 'models'
 const DETECTION_MODEL = 'PP-OCRv5_mobile_det'
 const RECOGNITION_MODEL = 'PP-OCRv5_mobile_rec'
-// PaddleOCR 0.4.2 的类型仍限定为字符串，运行时则会原样转交 ORT 支持的精确资源映射。
-const ORT_WASM_PATHS = { wasm: ortWasmUrl } as unknown as string
 
 let engine: PaddleOCREngine | null = null
 let initialization: Promise<PaddleOCREngine> | null = null
@@ -31,6 +34,8 @@ interface OCRImageSurface {
 const imageSurfaces: OCRImageSurface[] = []
 
 export function useOCR() {
+  const assetLoader = useOCRAssetLoader()
+
   /** 初始化 PP-OCRv5 移动端模型。 */
   async function initializeOCR(): Promise<void> {
     await getOrCreateEngine()
@@ -84,6 +89,8 @@ export function useOCR() {
     recognizeFrame,
     terminateOCR,
     runtimeMode: readonly(runtimeMode),
+    preparation: assetLoader.preparation,
+    inspectAssets: inspectOCRAssets,
   }
 }
 
@@ -107,49 +114,51 @@ async function createPaddleEngine(): Promise<PaddleOCREngine> {
     throw new Error('PaddleOCR 模型不能通过 file:// 加载，请使用 npm run preview 或本地 HTTP 服务打开 dist')
   }
 
-  const [ort, { PaddleOCR }] = await Promise.all([
-    import('onnxruntime-web'),
-    import('@paddleocr/paddleocr-js'),
-  ])
-  // 模型内未使用的初始化器由 ORT 自动清理，仅隐藏不会影响推理结果的运行时警告。
-  ort.env.logLevel = 'error'
-  const sharedOptions = {
-    textDetectionModelName: DETECTION_MODEL,
-    textDetectionModelAsset: {
-      url: resolvePublicAsset(`${MODEL_DIRECTORY}/${DETECTION_MODEL}_onnx_infer.tar`),
-    },
-    textRecognitionModelName: RECOGNITION_MODEL,
-    textRecognitionModelAsset: {
-      url: resolvePublicAsset(`${MODEL_DIRECTORY}/${RECOGNITION_MODEL}_onnx_infer.tar`),
-    },
-    textRecognitionBatchSize: 8,
-    ortOptions: {
-      // 固定 WASM，避免 WebGPU 会话创建失败后污染 ORT 的后端降级状态。
-      backend: 'wasm',
-      // 显式传入 Vite 生成的带哈希资源地址，避免部署服务器将缺失的 WASM 请求回退成 index.html。
-      wasmPaths: ORT_WASM_PATHS,
-      // 单线程 WASM 无需服务器配置 COOP/COEP，普通静态服务器即可直接分享使用。
-      numThreads: 1,
-      simd: true,
-    },
-  } as const
-
+  const assets = await prepareOCRAssets()
   try {
-    const workerEngine = await PaddleOCR.create({ ...sharedOptions, worker: true })
-    runtimeMode.value = 'worker'
-    return workerEngine
-  } catch (workerError) {
-    // 部分浏览器或静态服务器无法加载包内 module worker，自动降级以保证识别仍可使用。
-    console.warn('OCR Worker 初始化失败，已切换到主线程模式。', workerError)
-    const mainThreadEngine = await PaddleOCR.create({ ...sharedOptions, worker: false })
-    runtimeMode.value = 'main-thread'
-    return mainThreadEngine
-  }
-}
+    const [ort, { PaddleOCR }] = await Promise.all([
+      import('onnxruntime-web'),
+      import('@paddleocr/paddleocr-js'),
+    ])
+    // 模型内未使用的初始化器由 ORT 自动清理，仅隐藏不会影响推理结果的运行时警告。
+    ort.env.logLevel = 'error'
+    setOCRPreparationPhase('initializing', '正在创建 OCR 识别引擎')
+    const sharedOptions = {
+      textDetectionModelName: DETECTION_MODEL,
+      textDetectionModelAsset: { url: assets.detectionModelUrl },
+      textRecognitionModelName: RECOGNITION_MODEL,
+      textRecognitionModelAsset: { url: assets.recognitionModelUrl },
+      textRecognitionBatchSize: 8,
+      ortOptions: {
+        // 固定 WASM，避免 WebGPU 会话创建失败后污染 ORT 的后端降级状态。
+        backend: 'wasm',
+        // PaddleOCR 类型仍限定为字符串，运行时会原样转交 ORT 支持的精确资源映射。
+        wasmPaths: { wasm: assets.wasmUrl } as unknown as string,
+        // 单线程 WASM 无需服务器配置 COOP/COEP，普通静态服务器即可直接分享使用。
+        numThreads: 1,
+        simd: true,
+      },
+    } as const
 
-/** 将 public 资源路径转换成绝对地址，确保工作线程不会相对 assets 目录取模型。 */
-function resolvePublicAsset(path: string): string {
-  return new URL(`${import.meta.env.BASE_URL}${path}`, document.baseURI).href
+    try {
+      const workerEngine = await PaddleOCR.create({ ...sharedOptions, worker: true })
+      runtimeMode.value = 'worker'
+      setOCRPreparationPhase('ready', 'OCR 已就绪')
+      return workerEngine
+    } catch (workerError) {
+      // 部分浏览器或静态服务器无法加载包内 module worker，自动降级以保证识别仍可使用。
+      console.warn('OCR Worker 初始化失败，已切换到主线程模式。', workerError)
+      const mainThreadEngine = await PaddleOCR.create({ ...sharedOptions, worker: false })
+      runtimeMode.value = 'main-thread'
+      setOCRPreparationPhase('ready', 'OCR 已就绪')
+      return mainThreadEngine
+    }
+  } catch (error) {
+    markOCRPreparationError(error)
+    throw error
+  } finally {
+    assets.release()
+  }
 }
 
 /** 保留游戏原始颜色，仅做高质量放大，避免二值化破坏描边字体。 */

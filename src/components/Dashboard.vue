@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, shallowRef, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, shallowRef, watch } from 'vue'
 import CaptureCalibration from './CaptureCalibration.vue'
 import CapturePreview from './CapturePreview.vue'
 import AnswerOverlay from './AnswerOverlay.vue'
@@ -38,12 +38,36 @@ const calibrating = shallowRef(false)
 const focusMode = shallowRef(false)
 const activePage = shallowRef<'recognition' | 'questionBank'>('recognition')
 const pageSwitching = shallowRef(false)
+const ocrPreparationVisible = shallowRef(false)
+const pendingCaptureAfterPreparation = shallowRef(false)
 const ocrRuntimeLabel = computed(() => ({
   uninitialized: '尚未初始化',
   worker: 'Worker 后台线程',
   'main-thread': '主线程兼容模式',
   error: '初始化失败',
 }[ocr.runtimeMode.value]))
+const ocrPreparationPercent = computed(() => {
+  if (!ocr.preparation.totalBytes) return 0
+  return Math.min(100, Math.round(
+    ocr.preparation.loadedBytes / ocr.preparation.totalBytes * 100,
+  ))
+})
+const ocrPreparationBusy = computed(() => [
+  'downloading',
+  'loading-cache',
+  'loading-runtime',
+  'initializing',
+].includes(ocr.preparation.phase))
+const ocrPreparationTitle = computed(() => ({
+  checking: '正在检查 OCR 组件',
+  missing: '首次使用需要准备 OCR 组件',
+  downloading: '正在下载 OCR 组件',
+  'loading-cache': '正在读取本地 OCR 组件',
+  'loading-runtime': '正在加载 OCR 运行环境',
+  initializing: '正在初始化 OCR 引擎',
+  ready: 'OCR 已准备完成',
+  error: 'OCR 组件准备失败',
+}[ocr.preparation.phase]))
 
 /** 将内部捕获状态转换为面向用户的中文文案。 */
 const captureStatusLabel = computed(() => ({
@@ -134,6 +158,9 @@ async function startCapture(): Promise<void> {
     const ownsCapture = await screenCapture.startCapture()
     if (!ownsCapture) return
     previewStream.value = screenCapture.getActiveStream()
+    ocrPreparationVisible.value = true
+    await ocr.initializeOCR()
+    ocrPreparationVisible.value = false
     captureStore.setStatus('active')
     focusMode.value = true
     if (hasCalibration.value) {
@@ -147,8 +174,44 @@ async function startCapture(): Promise<void> {
     previewStream.value = null
     calibrating.value = false
     focusMode.value = false
+    ocrPreparationVisible.value = ocr.preparation.phase === 'error'
     captureStore.setError(getCaptureErrorMessage(error))
   }
+}
+
+/** 根据本地缓存状态决定直接连接画面或先征求大文件下载确认。 */
+function requestCapture(): void {
+  if (
+    !selectedCategoryId.value
+    || captureStore.status === 'requesting'
+    || captureStore.status === 'active'
+  ) return
+
+  if (ocr.preparation.phase === 'checking' || ocr.preparation.phase === 'missing') {
+    pendingCaptureAfterPreparation.value = true
+    ocrPreparationVisible.value = true
+    return
+  }
+
+  void startCapture()
+}
+
+/** 从确认按钮发起屏幕授权，并在授权完成后下载与初始化 OCR。 */
+function confirmOCRPreparation(): void {
+  pendingCaptureAfterPreparation.value = false
+  void startCapture()
+}
+
+/** 关闭首次下载提示并取消本次连接意图。 */
+function cancelOCRPreparation(): void {
+  if (ocrPreparationBusy.value) return
+  pendingCaptureAfterPreparation.value = false
+  ocrPreparationVisible.value = false
+}
+
+/** 将字节数格式化为适合下载提示展示的兆字节。 */
+function formatMegabytes(bytes: number): string {
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
 }
 
 /** 停止连续识别与当前屏幕共享。 */
@@ -241,6 +304,10 @@ function closeQuestionBank(): void {
 
 const unsubscribeCaptureEnded = screenCapture.onCaptureEnded(handleCaptureEnded)
 
+onMounted(() => {
+  void ocr.inspectAssets()
+})
+
 onBeforeUnmount(() => {
   unsubscribeCaptureEnded()
   controller.stop()
@@ -309,7 +376,7 @@ onBeforeUnmount(() => {
             class="primary-action"
             type="button"
             :disabled="!selectedCategoryId || captureStore.status === 'requesting' || captureStore.status === 'active'"
-            @click="startCapture"
+            @click="requestCapture"
           >
             连接游戏画面
           </button>
@@ -410,5 +477,80 @@ onBeforeUnmount(() => {
     <p v-if="answerPictureInPicture.error.value" class="floating-answer-error" role="alert">
       {{ answerPictureInPicture.error.value }}
     </p>
+
+    <div v-if="ocrPreparationVisible" class="ocr-preparation-backdrop">
+      <section
+        class="panel ocr-preparation-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="ocr-preparation-title"
+      >
+        <div class="ocr-preparation-heading">
+          <span class="ocr-preparation-icon" aria-hidden="true">OCR</span>
+          <div>
+            <h2 id="ocr-preparation-title">{{ ocrPreparationTitle }}</h2>
+            <p v-if="ocr.preparation.phase === 'missing'">
+              首次识别需要下载约 {{ formatMegabytes(ocr.preparation.totalBytes) }} 的本地组件，
+              下载后将保存在浏览器中，后续通常无需重复下载。
+            </p>
+            <p v-else-if="ocr.preparation.phase === 'error'" class="error-text">
+              {{ ocr.preparation.error }}
+            </p>
+            <p v-else>{{ ocr.preparation.currentAsset }}</p>
+          </div>
+        </div>
+
+        <div v-if="ocrPreparationBusy" class="ocr-preparation-progress" role="status" aria-live="polite">
+          <div class="ocr-progress-track">
+            <span :style="{ width: `${ocrPreparationPercent}%` }" />
+          </div>
+          <div class="ocr-progress-meta">
+            <span>{{ ocr.preparation.currentAsset }}</span>
+            <strong v-if="ocr.preparation.phase === 'downloading' || ocr.preparation.phase === 'loading-cache'">
+              {{ ocrPreparationPercent }}%
+            </strong>
+          </div>
+          <small v-if="ocr.preparation.phase === 'downloading'">
+            已准备 {{ formatMegabytes(ocr.preparation.loadedBytes) }} /
+            {{ formatMegabytes(ocr.preparation.totalBytes) }}
+          </small>
+        </div>
+
+        <div class="ocr-preparation-actions">
+          <button
+            v-if="ocr.preparation.phase === 'missing' && pendingCaptureAfterPreparation"
+            class="subtle-action"
+            type="button"
+            @click="cancelOCRPreparation"
+          >
+            暂不使用
+          </button>
+          <button
+            v-if="ocr.preparation.phase === 'missing' && pendingCaptureAfterPreparation"
+            class="primary-action"
+            type="button"
+            @click="confirmOCRPreparation"
+          >
+            下载并连接画面
+          </button>
+          <button
+            v-else-if="ocr.preparation.phase === 'error'"
+            class="primary-action"
+            type="button"
+            @click="confirmOCRPreparation"
+          >
+            重新尝试
+          </button>
+          <button
+            v-else-if="ocr.preparation.phase === 'ready'"
+            class="primary-action"
+            type="button"
+            @click="ocrPreparationVisible = false"
+          >
+            完成
+          </button>
+        </div>
+      </section>
+    </div>
   </section>
 </template>
