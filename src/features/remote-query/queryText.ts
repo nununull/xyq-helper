@@ -64,8 +64,8 @@ export function createCompactRemoteQueryText(text: string, maximumLength = 14): 
 }
 
 /**
- * 先用完整题干精确收窄结果，再使用多个高信息连续片段容忍 OCR 错字。
- * 远程接口只返回有限的前排结果，不能先用单个宽泛词召回几百道题。
+ * 将题干规划成短词组与独立实体词，兼顾召回精度和 OCR 错字容忍度。
+ * 只有短题干会整体查询，避免长文本中的一个错字让 175DT 完全无法命中。
  */
 export async function createProgressiveRemoteQueries(
   text: string,
@@ -77,15 +77,23 @@ export async function createProgressiveRemoteQueries(
 
   const queries: string[] = []
   const normalizedQueries = new Set<string>()
-  appendUniqueQuery(queries, normalizedQueries, cleaned)
-
   const words = await tokenizeChineseQuery(cleaned)
-  for (const phrase of selectDiscriminativePhrases(words, maximumLength, 3)) {
+
+  // 短题干本身足够精确；长题干不再整段发送，避免一个 OCR 错字导致整次查询失效。
+  if (compact.length <= maximumLength) {
+    appendUniqueQuery(queries, normalizedQueries, cleaned)
+  }
+
+  // 先查短而有上下文的词组，再查互相独立的实体词，使单个错字只影响其中一路召回。
+  for (const phrase of selectDiscriminativePhrases(words, Math.min(maximumLength, 8), 2)) {
     appendUniqueQuery(queries, normalizedQueries, phrase)
   }
 
-  // 最后才使用单个实体词兜底，避免宽查询返回的前 20 条淹没正确题目。
+  // 优先保留规则实体的请求名额，补充分词器未能识别的书名、人名和数字量词。
   appendUniqueQuery(queries, normalizedQueries, selectFallbackKeyword(cleaned))
+  for (const keyword of selectDiscriminativeWords(words, 3)) {
+    appendUniqueQuery(queries, normalizedQueries, keyword)
+  }
   return queries.slice(0, maximumProgressiveQueryCount)
 }
 
@@ -118,8 +126,8 @@ function selectDiscriminativePhrases(
     .map((word) => normalizeQuestionText(word))
     .filter(Boolean)
   const textLength = normalizedWords.join('').length
-  const upperLength = Math.max(6, maximumLength)
-  const lowerLength = Math.min(5, upperLength)
+  const upperLength = Math.max(4, maximumLength)
+  const lowerLength = Math.min(4, upperLength)
   const candidates: Array<{ value: string; start: number; end: number; score: number }> = []
 
   for (let start = 0; start < normalizedWords.length; start += 1) {
@@ -149,6 +157,54 @@ function selectDiscriminativePhrases(
   }
 
   return selected.map((candidate) => candidate.value)
+}
+
+/**
+ * 选择含义不重复的自然词作为独立查询锚点。
+ * 锚点彼此不拼接，因此题干某处出现错别字时，其余正确词仍能从 175DT 召回候选。
+ */
+function selectDiscriminativeWords(words: string[], limit: number): string[] {
+  const candidates = words
+    .map((word, order) => ({ value: normalizeQuestionText(word), order }))
+    .filter((candidate) => candidate.value.length >= 2 && candidate.value.length <= 8)
+    .filter((candidate) => isUsefulKeyword(candidate.value))
+    .map((candidate) => ({
+      ...candidate,
+      score: scoreQueryWord(candidate.value),
+    }))
+    .filter((candidate) => candidate.score > 0)
+    .sort((left, right) => right.score - left.score || left.order - right.order)
+
+  const selected: typeof candidates = []
+  for (const candidate of candidates) {
+    const duplicatesMeaning = selected.some((current) => (
+      current.value.includes(candidate.value) || candidate.value.includes(current.value)
+    ))
+    if (duplicatesMeaning) continue
+    selected.push(candidate)
+    if (selected.length === limit) break
+  }
+
+  return selected.map((candidate) => candidate.value)
+}
+
+/** 依据有效字符密度与实体特征为单词查询评分。 */
+function scoreQueryWord(value: string): number {
+  let informativeCharacters = 0
+  let score = Math.min(value.length, 6) * 2
+  for (const character of value) {
+    if (/[a-z0-9]/i.test(character)) {
+      informativeCharacters += 1
+      score += 3
+    } else if (weakInformationCharacters.has(character)) {
+      score -= 2
+    } else {
+      informativeCharacters += 1
+      score += 2
+    }
+  }
+  if (/[鬼诗朝代史名书国学战发明宗]/.test(value)) score += 4
+  return informativeCharacters >= 2 ? score : 0
 }
 
 /** 依据实词密度、自然词完整度和题干位置为连续查询短语评分。 */
