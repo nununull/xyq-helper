@@ -75,9 +75,14 @@ async function withDatabase<T>(operation: (database: IDBPDatabase) => Promise<T>
   }
 }
 
+/** 生成仅含题库领域数据的普通对象快照，避免把 Vue Proxy 交给 IndexedDB 克隆。 */
+function createStorageSnapshot<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T
+}
+
 /** 保存应用配置。 */
 export async function saveConfig(config: AppConfig): Promise<void> {
-  await withDatabase(async db => await db.put('config', config, 'app'))
+  await withDatabase(async db => await db.put('config', createStorageSnapshot(config), 'app'))
 }
 
 /** 读取应用配置，未保存时返回空值。 */
@@ -87,7 +92,7 @@ export async function loadConfig(): Promise<AppConfig | null> {
 
 /** 保存一条未识别题目。 */
 export async function saveUnknownQuestion(question: UnknownQuestion): Promise<void> {
-  await withDatabase(async db => await db.add('unknown_questions', question))
+  await withDatabase(async db => await db.add('unknown_questions', createStorageSnapshot(question)))
 }
 
 /** 列出全部未识别题目。 */
@@ -107,7 +112,9 @@ export async function getRemoteQuestionCache(
 
 /** 保存一条远程成功缓存。 */
 export async function putRemoteQuestionCache(record: RemoteQuestionCache): Promise<void> {
-  await withDatabase(async db => await createRemoteQuestionCacheRepository(db).put(record))
+  await withDatabase(async db => (
+    await createRemoteQuestionCacheRepository(db).put(createStorageSnapshot(record))
+  ))
 }
 
 /** 清理指定分类的远程成功缓存。 */
@@ -144,15 +151,18 @@ export async function listUserQuestions(): Promise<UserQuestionRecord[]> {
 
 /** 新增或更新一条人工题目，并返回数据库主键。 */
 export async function putUserQuestion(question: UserQuestionRecord): Promise<number> {
-  return await withDatabase(async db => await db.put('user_questions', question) as number)
+  return await withDatabase(async db => (
+    await db.put('user_questions', createStorageSnapshot(question)) as number
+  ))
 }
 
 /** 批量写入用户题库记录，在同一事务内完成远程题目沉淀。 */
 export async function putUserQuestions(questions: UserQuestionRecord[]): Promise<void> {
   if (questions.length === 0) return
+  const snapshots = createStorageSnapshot(questions)
   await withDatabase(async db => {
     const transaction = db.transaction('user_questions', 'readwrite')
-    for (const question of questions) await transaction.store.put(question)
+    for (const question of snapshots) await transaction.store.put(question)
     await transaction.done
   })
 }
@@ -164,10 +174,11 @@ export async function deleteUserQuestion(id: number): Promise<void> {
 
 /** 以一次事务替换人工题库，供导入完整备份使用。 */
 export async function replaceUserQuestions(questions: UserQuestionRecord[]): Promise<void> {
+  const snapshots = createStorageSnapshot(questions)
   await withDatabase(async db => {
     const transaction = db.transaction('user_questions', 'readwrite')
     await transaction.store.clear()
-    for (const question of questions) await transaction.store.put(question)
+    for (const question of snapshots) await transaction.store.put(question)
     await transaction.done
   })
 }
