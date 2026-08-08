@@ -1,6 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { listRemoteQuestionCaches } from '../composables/useLocalStorageDB'
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 import { useDBStore } from '../stores/db'
 import type {
   AnswerOptionKey,
@@ -22,7 +21,6 @@ const editing = ref(false)
 const message = ref('')
 const error = ref('')
 const importInput = ref<HTMLInputElement | null>(null)
-const cachedAnswerCount = ref(0)
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 
 interface ManagedQuestion {
@@ -80,8 +78,27 @@ const managedQuestions = computed<ManagedQuestion[]>(() => {
       return question ? createManagedQuestion(question, 'custom', userRecord) : null
     })
     .filter((item): item is ManagedQuestion => Boolean(item))
-  return [...baseRows, ...customRows]
+  return [...baseRows, ...customRows].sort((left, right) => {
+    const leftTime = Date.parse(left.userRecord?.createdAt ?? '') || 0
+    const rightTime = Date.parse(right.userRecord?.createdAt ?? '') || 0
+    return rightTime - leftTime
+  })
 })
+
+/** 格式化题目首次收录时间，基础题库没有本地收录时间。 */
+function formatCollectedAt(value?: string): string {
+  if (!value) return '—'
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return '—'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(timestamp)
+}
 
 const filteredQuestions = computed(() => {
   const query = normalizeQuestionText(searchKeyword.value)
@@ -269,48 +286,6 @@ function scheduleSearch(): void {
   }, 120)
 }
 
-/** 将尚未进入基础题库的成功缓存批量收录到人工题库。 */
-async function collectCachedAnswers(): Promise<void> {
-  clearFeedback()
-  const caches = await listRemoteQuestionCaches()
-  const existingKeys = new Set([
-    ...dbStore.baseQuestions.map((item) => item.normalizedQuestion),
-    ...dbStore.userQuestions.map((item) => normalizeQuestionText(item.question)),
-  ])
-  const now = new Date().toISOString()
-  const records: UserQuestionRecord[] = []
-  for (const cache of caches) {
-    const question = cache.matchedQuestion.trim() || cache.recognizedQuestion.trim()
-    const key = normalizeQuestionText(question)
-    if (!key || existingKeys.has(key)) continue
-    existingKeys.add(key)
-    records.push({
-      question,
-      options: { A: '', B: '', C: '', D: '' },
-      answerText: cache.answerText,
-      category: cache.categoryId,
-      source: 'manual',
-      createdAt: new Date(cache.createdAt).toISOString(),
-      updatedAt: now,
-      revision: 1,
-    })
-  }
-  if (records.length > 0) await dbStore.importUserQuestions(records)
-  cachedAnswerCount.value = caches.length
-  message.value = records.length > 0
-    ? `已从缓存收录 ${records.length} 道新题，可继续逐条编辑审核`
-    : '缓存中的题目均已存在于当前题库'
-}
-
-/** 初始化成功缓存数量，用于提示尚可整理的数据规模。 */
-async function refreshCachedAnswerCount(): Promise<void> {
-  cachedAnswerCount.value = (await listRemoteQuestionCaches()).length
-}
-
-onMounted(() => {
-  void refreshCachedAnswerCount()
-})
-
 onBeforeUnmount(() => {
   if (searchTimer) clearTimeout(searchTimer)
 })
@@ -326,8 +301,8 @@ onBeforeUnmount(() => {
       </div>
       <div class="question-bank-stats">
         <span><strong>{{ dbStore.questions.length }}</strong> 有效题目</span>
-        <span><strong>{{ dbStore.userQuestions.filter((item) => item.baseKey).length }}</strong> 人工修订</span>
-        <span><strong>{{ dbStore.userQuestions.filter((item) => !item.baseKey).length }}</strong> 人工新增</span>
+        <span><strong>{{ dbStore.userQuestions.filter((item) => item.baseKey).length }}</strong> 本地修订</span>
+        <span><strong>{{ dbStore.userQuestions.filter((item) => !item.baseKey).length }}</strong> 新增收录</span>
       </div>
     </div>
 
@@ -341,12 +316,9 @@ onBeforeUnmount(() => {
       <select v-model="sourceFilter" @change="resetPage">
         <option value="all">全部来源</option>
         <option value="base">仅基础题库</option>
-        <option value="manual">仅人工维护</option>
+        <option value="manual">仅本地收录</option>
       </select>
       <button type="button" class="primary-action" @click="createQuestion">新增题目</button>
-      <button type="button" :disabled="cachedAnswerCount === 0" @click="collectCachedAnswers">
-        收录缓存答案 ({{ cachedAnswerCount }})
-      </button>
       <button type="button" @click="exportFullBank">导出完整题库</button>
       <button type="button" @click="exportPatch">导出更新包</button>
       <button type="button" @click="chooseImportFile">导入题库</button>
@@ -359,7 +331,7 @@ onBeforeUnmount(() => {
     <div class="question-table-wrap panel">
       <table class="question-table">
         <thead>
-          <tr><th>题干</th><th>答案</th><th>分类</th><th>来源</th><th>操作</th></tr>
+          <tr><th>题干</th><th>答案</th><th>分类</th><th>来源</th><th>收录时间 ↓</th><th>操作</th></tr>
         </thead>
         <tbody>
           <tr v-for="item in pagedQuestions" :key="`${item.origin}-${item.question.id}`">
@@ -371,9 +343,10 @@ onBeforeUnmount(() => {
             <td>{{ item.question.category || '未分类' }}</td>
             <td>
               <span class="source-badge" :class="item.origin">
-                {{ item.origin === 'base' ? '基础' : item.origin === 'override' ? '已修订' : '新增' }}
+                {{ item.question.source === '175dt' ? '175DT' : item.origin === 'base' ? '基础' : item.origin === 'override' ? '已修订' : '新增' }}
               </span>
             </td>
+            <td class="question-collected-at">{{ formatCollectedAt(item.userRecord?.createdAt) }}</td>
             <td class="question-actions">
               <button type="button" @click="editQuestion(item)">编辑</button>
               <button v-if="item.userRecord" type="button" class="danger-action" @click="removeUserRecord(item)">
@@ -381,7 +354,7 @@ onBeforeUnmount(() => {
               </button>
             </td>
           </tr>
-          <tr v-if="pagedQuestions.length === 0"><td colspan="5" class="muted">没有匹配题目。</td></tr>
+          <tr v-if="pagedQuestions.length === 0"><td colspan="6" class="muted">没有匹配题目。</td></tr>
         </tbody>
       </table>
       <footer class="question-pagination">

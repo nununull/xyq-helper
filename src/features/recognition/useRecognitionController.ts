@@ -17,7 +17,6 @@ import type { OCRResult } from '../../types/ocr'
 import type { ParsedQuestion } from '../../types/question'
 import type {
   RecognitionPhase,
-  RemoteAmbiguousCandidate,
   RemoteQueryOptions,
   RemoteQueryResult,
   RemoteQuestionCandidate,
@@ -67,10 +66,18 @@ interface RecognitionStorePort {
 interface MatcherStorePort {
   /** 发布或清空当前匹配结果。 */
   setResult(result: MatchResult | null): void
-  /** 发布或清空远程歧义候选。 */
-  setRemoteCandidates(candidates: RemoteAmbiguousCandidate[]): void
-  /** 发布远程接口返回的人工备选列表。 */
-  setRemoteResults?(candidates: RemoteAmbiguousCandidate[]): void
+  /** 允许旧适配器继续提供候选接收能力，自动识别流程不再调用。 */
+  setRemoteCandidates?(candidates: Array<{
+    question: string
+    answerText: string
+    confidence: number
+  }>): void
+  /** 发布按相似度排序的远程匹配结果，用于只读展示。 */
+  setRemoteMatches?(matches: Array<{
+    question: string
+    answerText: string
+    confidence: number
+  }>): void
   /** 发布或清空当前匹配错误。 */
   setError(error: string): void
   /** 清空当前匹配上下文。 */
@@ -125,6 +132,8 @@ export interface RecognitionControllerDependencies {
   readCache(categoryId: string, fingerprint: string): Promise<RemoteQuestionCache | undefined>
   /** 持久化新增或更新后的缓存。 */
   writeCache(record: RemoteQuestionCache): Promise<void>
+  /** 将远程接口返回的完整题目直接沉淀到本地题库。 */
+  persistRemoteQuestions?(categoryId: string, candidates: RemoteQuestionCandidate[]): Promise<number>
   /** 读取当前活动分类。 */
   getCategoryId(): string
   /** 读取当前远程请求超时。 */
@@ -143,8 +152,6 @@ export interface RecognitionController {
   stop(): void
   /** 绕过当前题目冷却并立即重试。 */
   retry(): Promise<void>
-  /** 接受用户人工选择的远程候选并缓存结果。 */
-  selectCandidate(candidate: RemoteAmbiguousCandidate, parsed: ParsedQuestion): Promise<void>
   /** 为新的活动分类重置识别上下文。 */
   resetForCategory(): void
 }
@@ -163,6 +170,7 @@ export function createRecognitionController(
     getCaptureIntervalMs,
     readCache,
     writeCache,
+    persistRemoteQuestions,
     getCategoryId,
     getRequestTimeoutMs,
     now,
@@ -285,7 +293,6 @@ export function createRecognitionController(
   ): void {
     const context = activeSolveContext
     if (!context || !canPublish(context)) return
-    matcherStore.setRemoteCandidates([])
 
     const messages = {
       corsBlocked: '可能是 CORS 或网络错误',
@@ -402,7 +409,6 @@ export function createRecognitionController(
     const context = solveContexts.get(parsed)
     if (!context || !canPublish(context)) return
     if (decision.kind === 'rejected' || !decision.best) {
-      matcherStore.setRemoteCandidates([])
       questionFailureCooldowns.set(
         parsed.normalizedQuestion,
         now() + QUESTION_FAILURE_COOLDOWN_MS,
@@ -413,23 +419,6 @@ export function createRecognitionController(
       recognitionStore.setPhase('waitingRetry', message)
       return
     }
-    if (decision.kind === 'ambiguous') {
-      questionFailureCooldowns.set(
-        parsed.normalizedQuestion,
-        now() + QUESTION_FAILURE_COOLDOWN_MS,
-      )
-      snapshotRetryPending = true
-      const message = '找到多道相似题'
-      matcherStore.setRemoteCandidates(decision.candidates.slice(0, 2).map((candidate) => ({
-        question: candidate.question,
-        answerText: candidate.answerText,
-        confidence: candidate.confidence,
-      })))
-      matcherStore.setError(message)
-      recognitionStore.setPhase('waitingRetry', message)
-      return
-    }
-
     const best = decision.best
     const cachedAt = now()
     const cacheRecord: RemoteQuestionCache = {
@@ -452,7 +441,11 @@ export function createRecognitionController(
     }
 
     const durationMs = Math.max(0, Math.round(performance.now() - startedAt))
-    const warning = decision.kind === 'lowConfidence' ? '匹配置信度较低，请核对答案' : undefined
+    const warning = decision.kind === 'ambiguous'
+      ? '存在多道相似题，已自动显示最相似答案'
+      : decision.kind === 'lowConfidence'
+        ? '匹配置信度较低，请核对答案'
+        : undefined
     matcherStore.setResult({
       questionId: cacheRecord.id,
       answer: best.answer,
@@ -557,7 +550,6 @@ export function createRecognitionController(
       let decision: RemoteMatchDecision = rankRemoteCandidates(parsed, [], ocrConfidence)
       const accumulatedCandidates = new Map<string, RemoteQuestionCandidate>()
       const remoteQueryStartedAt = now()
-      matcherStore.setRemoteResults?.([])
 
       for (const [index, queryText] of queryTerms.entries()) {
         if (index > 0 && now() - remoteQueryStartedAt >= REMOTE_QUERY_BUDGET_MS) break
@@ -577,12 +569,15 @@ export function createRecognitionController(
         }
         if (result.kind === 'empty') continue
 
+        await persistRemoteQuestions?.(categoryId, result.candidates)
+        if (!canPublish(context)) return
+
         for (const candidate of result.candidates) {
           const key = `${candidate.question}\u0000${candidate.answerText}`
           accumulatedCandidates.set(key, candidate)
         }
         decision = rankRemoteCandidates(parsed, [...accumulatedCandidates.values()], ocrConfidence)
-        matcherStore.setRemoteResults?.(decision.candidates.slice(0, 10).map((candidate) => ({
+        matcherStore.setRemoteMatches?.(decision.candidates.slice(0, 5).map((candidate) => ({
           question: candidate.question,
           answerText: candidate.answerText,
           confidence: candidate.confidence,
@@ -598,7 +593,6 @@ export function createRecognitionController(
       return
     } catch (error) {
       if (canPublish(context)) {
-        matcherStore.setRemoteCandidates([])
         questionFailureCooldowns.set(
           parsed.normalizedQuestion,
           now() + QUESTION_FAILURE_COOLDOWN_MS,
@@ -780,7 +774,6 @@ export function createRecognitionController(
       invalidateActiveSolve()
       clearCurrentQuestionContext()
       recognitionStore.setRunning(false)
-      matcherStore.setRemoteCandidates([])
       recognitionStore.setPhase('paused', '连续识别已暂停')
     },
 
@@ -796,58 +789,6 @@ export function createRecognitionController(
       clearCurrentQuestionContext()
       matcherStore.setError('')
       await enqueueFrame()
-    },
-
-    /** 接受人工候选、推导当前选项字母并写入本地缓存。 */
-    async selectCandidate(
-      candidate: RemoteAmbiguousCandidate,
-      parsed: ParsedQuestion,
-    ): Promise<void> {
-      const categoryId = getCategoryId()
-      if (!categoryId) return
-      invalidateActiveSolve()
-      const fingerprint = createQuestionFingerprint(parsed.normalizedQuestion)
-      const inferred = inferRemoteAnswer(candidate.answerText, parsed.options)
-      const cachedAt = now()
-      const cacheRecord: RemoteQuestionCache = {
-        id: `${categoryId}:${fingerprint}`,
-        categoryId,
-        questionFingerprint: fingerprint,
-        recognizedQuestion: parsed.questionText,
-        matchedQuestion: candidate.question,
-        answerText: candidate.answerText,
-        source: '175dt-manual',
-        matchConfidence: candidate.confidence,
-        createdAt: cachedAt,
-        lastUsedAt: cachedAt,
-        hitCount: 1,
-      }
-      await writeCache(cacheRecord)
-
-      matcherStore.setResult({
-        questionId: cacheRecord.id,
-        answer: inferred.answer,
-        answerText: candidate.answerText,
-        confidence: candidate.confidence,
-        matchedQuestion: candidate.question,
-        source: cacheRecord.source,
-        resultSource: 'remote',
-        warning: inferred.answer ? '已采用人工选择的候选题' : '已选择候选题，但未能定位选项字母',
-        candidates: [],
-      })
-      matcherStore.setRemoteResults?.([])
-      matcherStore.setError('')
-      recognitionStore.setOutcome('remote', 0)
-      recognitionStore.setLastCompletedFingerprint(fingerprint)
-      recognitionStore.setLastCompletedQuestion(parsed.normalizedQuestion)
-      lastCompletedCache = {
-        normalizedQuestion: parsed.normalizedQuestion,
-        value: cacheRecord,
-      }
-      activeFingerprint = fingerprint
-      snapshotRetryPending = false
-      questionFailureCooldowns.delete(parsed.normalizedQuestion)
-      recognitionStore.setPhase('showingAnswer', '已采用人工选择的远程候选')
     },
 
     /** 切换分类时清除题目上下文并废弃旧分类的在途结果。 */
@@ -909,6 +850,9 @@ export function useRecognitionController(): RecognitionController {
     },
     readCache: getRemoteQuestionCache,
     writeCache: putRemoteQuestionCache,
+    persistRemoteQuestions: async (categoryId, candidates) => (
+      await dbStore.harvestRemoteQuestions(categoryId, candidates)
+    ),
     getCategoryId: () => configStore.config.remoteQuery.categoryId,
     getRequestTimeoutMs: () => configStore.config.remoteQuery.requestTimeoutMs,
     now: () => Date.now(),

@@ -36,6 +36,7 @@ export interface PreparedOCRAssets {
 }
 
 const OCR_ASSET_CACHE = 'xyq-ocr-assets-v1'
+const OCR_ASSET_VERSION = 'v1'
 const MODEL_DIRECTORY = 'models'
 const DETECTION_MODEL = 'PP-OCRv5_mobile_det'
 const RECOGNITION_MODEL = 'PP-OCRv5_mobile_rec'
@@ -95,7 +96,7 @@ export async function inspectOCRAssets(): Promise<boolean> {
     }
 
     for (const asset of definitions) {
-      if (!await cache.match(asset.url)) {
+      if (!await readCachedAsset(cache, asset)) {
         state.phase = 'missing'
         state.currentAsset = ''
         return false
@@ -129,7 +130,7 @@ export async function prepareOCRAssets(): Promise<PreparedOCRAssets> {
 
   try {
     for (const asset of definitions) {
-      const cachedResponse = await cache?.match(asset.url)
+      const cachedResponse = cache ? await readCachedAsset(cache, asset) : undefined
       state.phase = cachedResponse ? 'loading-cache' : 'downloading'
       state.currentAsset = cachedResponse ? `正在读取${asset.label}` : `正在下载${asset.label}`
 
@@ -203,9 +204,6 @@ async function downloadAsset(
     throw new Error(`${asset.label}下载失败`)
   }
 
-  const cacheWrite = cache?.put(asset.url, response.clone()).catch((error) => {
-    console.warn(`${asset.label}写入浏览器缓存失败。`, error)
-  })
   const reader = response.body.getReader()
   const chunks: ArrayBuffer[] = []
   let receivedBytes = 0
@@ -220,10 +218,56 @@ async function downloadAsset(
     state.loadedBytes = Math.min(completedBytes + receivedBytes, state.totalBytes)
   }
 
-  await cacheWrite
-  return new Blob(chunks, {
+  const blob = new Blob(chunks, {
     type: response.headers.get('content-type') ?? 'application/octet-stream',
   })
+  if (cache) await persistCachedAsset(cache, asset, blob)
+  return blob
+}
+
+/** 生成与构建产物哈希和查询参数无关的稳定缓存键。 */
+function getAssetCacheKey(asset: OCRAssetDefinition): string {
+  return new URL(
+    `${import.meta.env.BASE_URL}__ocr_cache__/${OCR_ASSET_VERSION}/${asset.key}`,
+    document.baseURI,
+  ).href
+}
+
+/** 读取 OCR 资源，并将旧版 URL 缓存迁移到稳定缓存键。 */
+async function readCachedAsset(
+  cache: Cache,
+  asset: OCRAssetDefinition,
+): Promise<Response | undefined> {
+  const stableKey = getAssetCacheKey(asset)
+  const cached = await cache.match(stableKey)
+  if (cached) return cached
+
+  const legacyCached = await cache.match(asset.url)
+  if (!legacyCached) return undefined
+  try {
+    await cache.put(stableKey, legacyCached.clone())
+  } catch (error) {
+    console.warn(`${asset.label}迁移到稳定缓存键失败。`, error)
+  }
+  return legacyCached
+}
+
+/** 将完整 Blob 写入稳定缓存键，避免流复制失败或构建 URL 变化导致缓存失效。 */
+async function persistCachedAsset(
+  cache: Cache,
+  asset: OCRAssetDefinition,
+  blob: Blob,
+): Promise<void> {
+  try {
+    await cache.put(getAssetCacheKey(asset), new Response(blob, {
+      headers: {
+        'Content-Type': blob.type || 'application/octet-stream',
+        'Content-Length': String(blob.size),
+      },
+    }))
+  } catch (error) {
+    console.warn(`${asset.label}写入浏览器缓存失败。`, error)
+  }
 }
 
 /** 打开版本化资源缓存；隐私模式或配额受限时自动退化为会话下载。 */

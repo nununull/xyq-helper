@@ -41,7 +41,7 @@ export interface RankedRemoteCandidate extends RemoteQuestionCandidate {
   confidence: number
 }
 
-export interface RemoteAmbiguousCandidate {
+export interface RemoteMatchPreview {
   question: string
   answerText: string
   confidence: number

@@ -4,6 +4,7 @@
   RemoteQuestionCandidate,
 } from '../../types/remoteQuestion'
 import { cleanRemoteQueryText } from './queryText'
+import { sanitizeRemoteAnswer, sanitizeRemoteText } from '../../utils/sanitizeRemoteText'
 
 const endpoint = 'https://s.175dt.com/'
 
@@ -45,8 +46,8 @@ export async function queryRemoteQuestions(
 
     const candidates = payload.hits
       .map((hit): RemoteQuestionCandidate => ({
-        question: stripRemoteHtml(hit.q),
-        answerText: stripRemoteHtml(hit.a),
+        question: sanitizeRemoteText(hit.q),
+        answerText: sanitizeRemoteAnswer(hit.a),
         source: '175dt',
       }))
       .filter((item) => item.question && item.answerText)
@@ -90,13 +91,3 @@ function isRemotePayload(payload: unknown): payload is RemotePayload {
     && candidate.hits.every((hit) => typeof hit?.q === 'string' && typeof hit?.a === 'string')
 }
 
-/** 移除接口题干中的高亮标签和常见 HTML 实体。 */
-function stripRemoteHtml(value: string): string {
-  return value
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .trim()
-}

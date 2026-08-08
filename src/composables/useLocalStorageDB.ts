@@ -147,6 +147,16 @@ export async function putUserQuestion(question: UserQuestionRecord): Promise<num
   return await withDatabase(async db => await db.put('user_questions', question) as number)
 }
 
+/** 批量写入用户题库记录，在同一事务内完成远程题目沉淀。 */
+export async function putUserQuestions(questions: UserQuestionRecord[]): Promise<void> {
+  if (questions.length === 0) return
+  await withDatabase(async db => {
+    const transaction = db.transaction('user_questions', 'readwrite')
+    for (const question of questions) await transaction.store.put(question)
+    await transaction.done
+  })
+}
+
 /** 删除一条人工题目或修订记录。 */
 export async function deleteUserQuestion(id: number): Promise<void> {
   await withDatabase(async db => await db.delete('user_questions', id))

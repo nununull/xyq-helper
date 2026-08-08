@@ -86,7 +86,7 @@ export function matchQuestion(
   return {
     questionId: best.question.id,
     answer,
-    answerText: best.question.answerText ?? parsed.options[answer],
+    answerText: best.question.answerText || best.question.options[answer] || parsed.options[answer],
     confidence: best.confidence,
     matchedQuestion: best.question.question,
     source: best.question.source,

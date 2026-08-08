@@ -28,7 +28,7 @@ export interface UserQuestionRecord {
   answer?: AnswerOptionKey
   answerText?: string
   category: string
-  source: 'manual'
+  source: 'manual' | '175dt'
   createdAt: string
   updatedAt: string
   revision: number

@@ -17,7 +17,6 @@ import { useMatcherStore } from '../stores/matcher'
 import { useOCRStore } from '../stores/ocr'
 import { useRecognitionStore } from '../stores/recognition'
 import { parseQuestion } from '../utils/parseQuestion'
-import type { RemoteAmbiguousCandidate } from '../types/remoteQuestion'
 import { applyAnswerRegion } from '../features/setup/applyCaptureRegion'
 import { hasValidCaptureRegions } from '../types/config'
 import type { CaptureRegion } from '../types/capture'
@@ -115,21 +114,14 @@ const actionHint = computed(() => {
 const parsedQuestion = computed(() => (
   ocrStore.lastResult ? parseQuestion(ocrStore.lastResult) : null
 ))
-const displayedCandidates = computed(() => (
-  matcherStore.remoteResults.length ? matcherStore.remoteResults : matcherStore.remoteCandidates
-))
 
-/** 播报新识别出的确定答案，避免用户频繁把视线移出游戏画面。 */
+/** 播报答案文本，不播报可能因选项乱序而失真的字母。 */
 function speakAnswer(): void {
   const result = matcherStore.result
   if (!configStore.config.overlay.speechEnabled || !result || !('speechSynthesis' in window)) return
 
-  const optionText = result.answerText?.trim()
-    || (result.answer ? parsedQuestion.value?.options[result.answer] : '')
-    || ''
-  const answerText = [result.answer ? `答案 ${result.answer}` : '答案', optionText]
-    .filter(Boolean)
-    .join('，')
+  const optionText = result.answerText?.trim() ?? ''
+  const answerText = optionText ? `答案，${optionText}` : '暂未识别到答案文本'
   const utterance = new SpeechSynthesisUtterance(answerText)
   utterance.lang = 'zh-CN'
   utterance.rate = 1.12
@@ -271,12 +263,6 @@ async function completeCalibration(answerRegion: CaptureRegion): Promise<void> {
 function cancelCalibration(): void {
   calibrating.value = false
   if (hasCalibration.value) controller.start()
-}
-
-/** 将用户人工确认的远程候选交给识别控制器保存并展示。 */
-async function selectRemoteCandidate(candidate: RemoteAmbiguousCandidate): Promise<void> {
-  if (!parsedQuestion.value) return
-  await controller.selectCandidate(candidate, parsedQuestion.value)
 }
 
 /** 让浏览器先绘制点击反馈，再挂载数据量较大的题库页面。 */
@@ -436,10 +422,11 @@ onBeforeUnmount(() => {
         >
           <AnswerOverlay
             :result="matcherStore.result"
-            :candidates="displayedCandidates"
+            :candidates="matcherStore.remoteMatches"
             :parsed-question="parsedQuestion"
             :message="recognitionStore.message"
-            @select="selectRemoteCandidate"
+            :phase="recognitionStore.phase"
+            :running="recognitionStore.running"
           />
         </CapturePreview>
       </main>
@@ -466,10 +453,11 @@ onBeforeUnmount(() => {
         <AnswerOverlay
           compact
           :result="matcherStore.result"
-          :candidates="displayedCandidates"
+          :candidates="matcherStore.remoteMatches"
           :parsed-question="parsedQuestion"
           :message="recognitionStore.message"
-          @select="selectRemoteCandidate"
+          :phase="recognitionStore.phase"
+          :running="recognitionStore.running"
         />
       </div>
     </Teleport>
