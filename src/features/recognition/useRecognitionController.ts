@@ -600,8 +600,9 @@ export function createRecognitionController(
       const accumulatedCandidates = new Map<string, RemoteQuestionCandidate>()
       const remoteQueryStartedAt = now()
       let queryFailure: Exclude<RemoteQueryResult, { kind: 'success' | 'empty' }> | null = null
+      let cancelPendingQueriesAfterPublish = false
 
-      for (let batchStart = 0; batchStart < queryTerms.length; batchStart += REMOTE_QUERY_CONCURRENCY) {
+      queryBatches: for (let batchStart = 0; batchStart < queryTerms.length; batchStart += REMOTE_QUERY_CONCURRENCY) {
         if (batchStart > 0 && now() - remoteQueryStartedAt >= REMOTE_QUERY_BUDGET_MS) break
         const batchTerms = queryTerms.slice(batchStart, batchStart + REMOTE_QUERY_CONCURRENCY)
         const phase = batchStart === 0 ? 'primaryQuery' : 'fallbackQuery'
@@ -609,15 +610,19 @@ export function createRecognitionController(
           phase,
           `正在并行查询 ${batchStart + 1}-${batchStart + batchTerms.length}/${queryTerms.length}：${batchTerms.join('、')}`,
         )
-        const batchResults = await Promise.all(batchTerms.map(async (queryText) => (
-          await queryRemoteOnce(categoryId, queryText, {
+        const pendingQueries = new Map(batchTerms.map((queryText, order) => [
+          order,
+          queryRemoteOnce(categoryId, queryText, {
             signal: requestController.signal,
             timeoutMs: getRequestTimeoutMs(),
-          })
-        )))
-        if (!canPublish(context)) return
+          }).then((result) => ({ order, result })),
+        ]))
 
-        for (const result of batchResults) {
+        // 任一并行请求返回后立即参与匹配，不等待同批最慢请求超时。
+        while (pendingQueries.size > 0) {
+          const { order, result } = await Promise.race(pendingQueries.values())
+          pendingQueries.delete(order)
+          if (!canPublish(context)) return
           if (result.kind !== 'success' && result.kind !== 'empty') {
             queryFailure ??= result
             continue
@@ -629,18 +634,21 @@ export function createRecognitionController(
             const key = `${candidate.question}\u0000${candidate.answerText}`
             accumulatedCandidates.set(key, candidate)
           }
-        }
 
-        decision = rankRemoteCandidates(parsed, [...accumulatedCandidates.values()], ocrConfidence)
-        matcherStore.setRemoteMatches?.(decision.candidates.slice(0, 5).map((candidate) => ({
-          question: candidate.question,
-          answerText: candidate.answerText,
-          confidence: candidate.confidence,
-        })))
-        const runnerUp = decision.candidates[1]
-        const hasDecisiveLead = !runnerUp
-          || (decision.best?.confidence ?? 0) - runnerUp.confidence >= 0.08
-        if (decision.kind === 'confident' && decision.best?.answer && hasDecisiveLead) break
+          decision = rankRemoteCandidates(parsed, [...accumulatedCandidates.values()], ocrConfidence)
+          matcherStore.setRemoteMatches?.(decision.candidates.slice(0, 5).map((candidate) => ({
+            question: candidate.question,
+            answerText: candidate.answerText,
+            confidence: candidate.confidence,
+          })))
+          const runnerUp = decision.candidates[1]
+          const hasDecisiveLead = !runnerUp
+            || (decision.best?.confidence ?? 0) - runnerUp.confidence >= 0.08
+          if (decision.kind === 'confident' && decision.best?.answer && hasDecisiveLead) {
+            cancelPendingQueriesAfterPublish = pendingQueries.size > 0
+            break queryBatches
+          }
+        }
       }
 
       // 并行分支允许部分失败；只在所有分支都没有候选时发布网络错误。
@@ -651,6 +659,7 @@ export function createRecognitionController(
 
       recognitionStore.setPhase('matching', '正在匹配候选题')
       await publishDecision(decision, categoryId, fingerprint, parsed, startedAt)
+      if (cancelPendingQueriesAfterPublish) requestController.abort()
       return
     } catch (error) {
       if (canPublish(context)) {
