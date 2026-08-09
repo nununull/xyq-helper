@@ -36,7 +36,7 @@ export interface PreparedOCRAssets {
 }
 
 const OCR_ASSET_CACHE = 'xyq-ocr-assets-v1'
-const OCR_ASSET_VERSION = 'v1'
+const OCR_ASSET_VERSION = 'v2'
 const MODEL_DIRECTORY = 'models'
 const DETECTION_MODEL = 'PP-OCRv5_mobile_det'
 const RECOGNITION_MODEL = 'PP-OCRv5_mobile_rec'
@@ -58,7 +58,7 @@ function getAssetDefinitions(): OCRAssetDefinition[] {
     {
       key: 'wasm',
       label: 'OCR 运行组件',
-      size: 26_827_543,
+      size: 25_014_754,
       url: ortWasmUrl,
     },
     {
