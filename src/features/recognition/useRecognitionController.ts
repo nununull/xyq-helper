@@ -205,7 +205,6 @@ export function createRecognitionController(
   let activeFingerprint: string | null = null
   let activeSolveContext: SolveContext | null = null
   let lastCompletedCache: SimilarQuestionEntry<RemoteQuestionCache> | null = null
-  let verifyingChangedFrame = false
   const solveContexts = new WeakMap<ParsedQuestion, SolveContext>()
 
   /** 生成与远端实际请求参数一致的缓存键。 */
@@ -255,7 +254,6 @@ export function createRecognitionController(
       && context.cacheGeneration === recognitionStore.cacheGeneration
       && context.requestController === activeRequestController
       && !context.requestController.signal.aborted
-      && !verifyingChangedFrame
   }
 
   /** 中止当前求解并递增求解代次，使迟到结果无法发布。 */
@@ -681,14 +679,11 @@ export function createRecognitionController(
     const captured = await captureFrame()
     const cacheChangedDuringCapture = synchronizeCacheGeneration()
     if (scheduledGeneration !== lifecycleGeneration || cacheChangedDuringCapture || !captured) return
-    // 远程求解期间不启动下一轮 OCR，避免“正在识别”状态覆盖查询状态并让校验标记丢弃答案。
-    if (activeRequestController) return
     if (captured.frameHash === lastStableFrameHash) {
       resumeStableSnapshotIfReady()
       return
     }
-    // 新画面完成 OCR 校验前暂停旧题发布，避免在识别新题时继续刷新上一题的检索状态。
-    verifyingChangedFrame = true
+    // 查询期间仍继续 OCR；确认换题后立即取消旧查询，避免等待整批远程请求结束。
     matcherStore.setError('')
     recognitionStore.setPhase('capturing', '正在处理新的题目画面')
     recognitionStore.setPhase('recognizing', '正在识别题目文字')
@@ -697,7 +692,6 @@ export function createRecognitionController(
     try {
       recognized = await recognizeFrame(captured)
     } catch (error) {
-      verifyingChangedFrame = false
       const cacheChangedDuringRecognition = synchronizeCacheGeneration()
       if (scheduledGeneration !== lifecycleGeneration || cacheChangedDuringRecognition) return
       ocrPresentation.publishError(error instanceof Error ? error.message : 'OCR 识别失败')
@@ -705,7 +699,6 @@ export function createRecognitionController(
     }
     const cacheChangedDuringRecognition = synchronizeCacheGeneration()
     if (scheduledGeneration !== lifecycleGeneration || cacheChangedDuringRecognition) {
-      verifyingChangedFrame = false
       return
     }
     ocrPresentation.publishResult(recognized)
@@ -718,7 +711,6 @@ export function createRecognitionController(
     if (stability.kind !== 'stable' && stability.kind !== 'forcedStable' && !canUseCurrentFrame) {
       // 单帧漏字或空结果不能证明已经换题，保留仍与画面对应的现有答案。
       if (!lastStableQuestion) beginPendingQuestion()
-      verifyingChangedFrame = false
       return
     }
     const stable = parsed
@@ -730,8 +722,6 @@ export function createRecognitionController(
       invalidateActiveSolve()
       matcherStore.clear()
     }
-    verifyingChangedFrame = false
-
     const ocrConfidence = (recognized.question.confidence + recognized.options.confidence) / 2
     lastStableFrameHash = captured.frameHash
     lastStableQuestion = stable.normalizedQuestion
