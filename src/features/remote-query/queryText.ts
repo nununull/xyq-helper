@@ -84,15 +84,15 @@ export async function createProgressiveRemoteQueries(
     appendUniqueQuery(queries, normalizedQueries, cleaned)
   }
 
-  // 先查短而有上下文的词组，再查互相独立的实体词，使单个错字只影响其中一路召回。
-  for (const phrase of selectDiscriminativePhrases(words, Math.min(maximumLength, 8), 2)) {
-    appendUniqueQuery(queries, normalizedQueries, phrase)
-  }
-
-  // 优先保留规则实体的请求名额，补充分词器未能识别的书名、人名和数字量词。
+  // 先发送真正的自然词，避免长度评分让所有请求都退化成相同长度的字符片段。
   appendUniqueQuery(queries, normalizedQueries, selectFallbackKeyword(cleaned))
   for (const keyword of selectDiscriminativeWords(words, 3)) {
     appendUniqueQuery(queries, normalizedQueries, keyword)
+  }
+
+  // 自然词之后只补一个短语上下文，兼顾单词召回过宽时的匹配精度。
+  for (const phrase of selectDiscriminativePhrases(words, Math.min(maximumLength, 6), 1)) {
+    appendUniqueQuery(queries, normalizedQueries, phrase)
   }
   return queries.slice(0, maximumProgressiveQueryCount)
 }

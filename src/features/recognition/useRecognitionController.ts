@@ -26,6 +26,7 @@ import { diceSimilarity, normalizeQuestionText } from '../../utils/normalizeText
 import { parseQuestion } from '../../utils/parseQuestion'
 import { findLikelyQuestionText, matchQuestion } from '../../utils/matcher'
 import {
+  cleanRemoteQueryText,
   createProgressiveRemoteQueries,
   createQuestionFingerprint,
   findSimilarQuestionEntry,
@@ -46,6 +47,7 @@ const CATEGORY_RATE_LIMIT_COOLDOWN_MS = 60_000
 const MAXIMUM_REMOTE_QUERY_COUNT = 6
 const REMOTE_QUERY_BUDGET_MS = 4_500
 const SAME_QUESTION_SIMILARITY = 0.95
+const MAXIMUM_REMOTE_RESULT_CACHE_SIZE = 200
 
 interface RecognitionStorePort {
   readonly cacheGeneration: number
@@ -181,6 +183,10 @@ export function createRecognitionController(
   const stabilizer = createQuestionStabilizer(0.78, 3)
   const questionFailureCooldowns = new Map<string, number>()
   const categoryRateLimitCooldowns = new Map<string, number>()
+  const remoteResultCache = new Map<
+    string,
+    Extract<RemoteQueryResult, { kind: 'success' | 'empty' }>
+  >()
 
   let running = false
   let loopPromise: Promise<void> | null = null
@@ -198,6 +204,33 @@ export function createRecognitionController(
   let lastCompletedCache: SimilarQuestionEntry<RemoteQuestionCache> | null = null
   let verifyingChangedFrame = false
   const solveContexts = new WeakMap<ParsedQuestion, SolveContext>()
+
+  /** 生成与远端实际请求参数一致的缓存键。 */
+  function createRemoteQueryKey(categoryId: string, queryText: string): string {
+    return `${categoryId}\u0000${normalizeQuestionText(cleanRemoteQueryText(queryText))}`
+  }
+
+  /** 查询一次远端关键词，并复用本次运行期间已经取得的相同结果。 */
+  async function queryRemoteOnce(
+    categoryId: string,
+    queryText: string,
+    options: RemoteQueryOptions,
+  ): Promise<RemoteQueryResult> {
+    const cleanedQuery = cleanRemoteQueryText(queryText)
+    const cacheKey = createRemoteQueryKey(categoryId, cleanedQuery)
+    const cached = remoteResultCache.get(cacheKey)
+    if (cached) return cached
+
+    const result = await query(categoryId, cleanedQuery, options)
+    if (result.kind === 'success' || result.kind === 'empty') {
+      remoteResultCache.set(cacheKey, result)
+      if (remoteResultCache.size > MAXIMUM_REMOTE_RESULT_CACHE_SIZE) {
+        const oldestKey = remoteResultCache.keys().next().value
+        if (oldestKey) remoteResultCache.delete(oldestKey)
+      }
+    }
+    return result
+  }
 
   /** 判断异步结果是否仍属于当前识别代次。 */
   function canPublish(context: SolveContext): boolean {
@@ -231,6 +264,7 @@ export function createRecognitionController(
     if (observedCacheGeneration === recognitionStore.cacheGeneration) return false
     observedCacheGeneration = recognitionStore.cacheGeneration
     invalidateActiveSolve()
+    remoteResultCache.clear()
     lastCompletedCache = null
     lastStableFrameHash = null
     lastStableQuestion = null
@@ -543,7 +577,7 @@ export function createRecognitionController(
       ]
         .filter((queryText, index, all) => (
           all.findIndex((current) => (
-            normalizeQuestionText(current) === normalizeQuestionText(queryText)
+            createRemoteQueryKey(categoryId, current) === createRemoteQueryKey(categoryId, queryText)
           )) === index
         ))
         .slice(0, MAXIMUM_REMOTE_QUERY_COUNT)
@@ -558,7 +592,7 @@ export function createRecognitionController(
           phase,
           `正在查询 ${index + 1}/${queryTerms.length}：${queryText}`,
         )
-        const result = await query(categoryId, queryText, {
+        const result = await queryRemoteOnce(categoryId, queryText, {
           signal: requestController.signal,
           timeoutMs: getRequestTimeoutMs(),
         })
@@ -796,6 +830,7 @@ export function createRecognitionController(
       lifecycleGeneration += 1
       invalidateActiveSolve()
       questionFailureCooldowns.clear()
+      remoteResultCache.clear()
       clearCurrentQuestionContext()
       recognitionStore.setLastCompletedFingerprint(null)
       recognitionStore.setLastCompletedQuestion(null)
