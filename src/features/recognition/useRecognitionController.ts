@@ -38,6 +38,7 @@ import {
   type RemoteMatchDecision,
 } from '../remote-query/remoteCandidateMatcher'
 import { queryRemoteQuestions } from '../remote-query/remoteQuestionClient'
+import { persistRemoteQuestionsInWorker } from '../remote-query/remoteQuestionPersistence'
 import { createQuestionStabilizer } from './questionStabilizer'
 import { createRecognitionRuntimeAdapters } from './recognitionRuntimeAdapters'
 
@@ -45,6 +46,7 @@ const POLL_INTERVAL_MS = 120
 const QUESTION_FAILURE_COOLDOWN_MS = 10_000
 const CATEGORY_RATE_LIMIT_COOLDOWN_MS = 60_000
 const MAXIMUM_REMOTE_QUERY_COUNT = 6
+const REMOTE_QUERY_CONCURRENCY = 3
 const REMOTE_QUERY_BUDGET_MS = 4_500
 const SAME_QUESTION_SIMILARITY = 0.95
 const MAXIMUM_REMOTE_RESULT_CACHE_SIZE = 200
@@ -191,6 +193,7 @@ export function createRecognitionController(
   let running = false
   let loopPromise: Promise<void> | null = null
   let detectionTail: Promise<void> = Promise.resolve()
+  let remotePersistenceTail: Promise<void> = Promise.resolve()
   let lifecycleGeneration = 0
   let activeSolveGeneration = 0
   let observedCacheGeneration = recognitionStore.cacheGeneration
@@ -230,6 +233,20 @@ export function createRecognitionController(
       }
     }
     return result
+  }
+
+  /** 将远程题目追加到后台串行入库队列，不阻塞当前查询和答案匹配。 */
+  function enqueueRemotePersistence(
+    categoryId: string,
+    candidates: RemoteQuestionCandidate[],
+  ): void {
+    if (!persistRemoteQuestions || candidates.length === 0) return
+    remotePersistenceTail = remotePersistenceTail
+      .catch(() => undefined)
+      .then(async () => {
+        await persistRemoteQuestions(categoryId, candidates)
+      })
+      .catch(() => undefined)
   }
 
   /** 判断异步结果是否仍属于当前识别代次。 */
@@ -585,31 +602,36 @@ export function createRecognitionController(
       const accumulatedCandidates = new Map<string, RemoteQuestionCandidate>()
       const remoteQueryStartedAt = now()
 
-      for (const [index, queryText] of queryTerms.entries()) {
-        if (index > 0 && now() - remoteQueryStartedAt >= REMOTE_QUERY_BUDGET_MS) break
-        const phase = index === 0 ? 'primaryQuery' : 'fallbackQuery'
+      for (let batchStart = 0; batchStart < queryTerms.length; batchStart += REMOTE_QUERY_CONCURRENCY) {
+        if (batchStart > 0 && now() - remoteQueryStartedAt >= REMOTE_QUERY_BUDGET_MS) break
+        const batchTerms = queryTerms.slice(batchStart, batchStart + REMOTE_QUERY_CONCURRENCY)
+        const phase = batchStart === 0 ? 'primaryQuery' : 'fallbackQuery'
         recognitionStore.setPhase(
           phase,
-          `正在查询 ${index + 1}/${queryTerms.length}：${queryText}`,
+          `正在并行查询 ${batchStart + 1}-${batchStart + batchTerms.length}/${queryTerms.length}：${batchTerms.join('、')}`,
         )
-        const result = await queryRemoteOnce(categoryId, queryText, {
-          signal: requestController.signal,
-          timeoutMs: getRequestTimeoutMs(),
-        })
-        if (!canPublish(context)) return
-        if (result.kind !== 'success' && result.kind !== 'empty') {
-          publishFailure(result)
-          return
-        }
-        if (result.kind === 'empty') continue
-
-        await persistRemoteQuestions?.(categoryId, result.candidates)
+        const batchResults = await Promise.all(batchTerms.map(async (queryText) => (
+          await queryRemoteOnce(categoryId, queryText, {
+            signal: requestController.signal,
+            timeoutMs: getRequestTimeoutMs(),
+          })
+        )))
         if (!canPublish(context)) return
 
-        for (const candidate of result.candidates) {
-          const key = `${candidate.question}\u0000${candidate.answerText}`
-          accumulatedCandidates.set(key, candidate)
+        for (const result of batchResults) {
+          if (result.kind !== 'success' && result.kind !== 'empty') {
+            publishFailure(result)
+            return
+          }
+          if (result.kind === 'empty') continue
+
+          enqueueRemotePersistence(categoryId, result.candidates)
+          for (const candidate of result.candidates) {
+            const key = `${candidate.question}\u0000${candidate.answerText}`
+            accumulatedCandidates.set(key, candidate)
+          }
         }
+
         decision = rankRemoteCandidates(parsed, [...accumulatedCandidates.values()], ocrConfidence)
         matcherStore.setRemoteMatches?.(decision.candidates.slice(0, 5).map((candidate) => ({
           question: candidate.question,
@@ -885,9 +907,7 @@ export function useRecognitionController(): RecognitionController {
     },
     readCache: getRemoteQuestionCache,
     writeCache: putRemoteQuestionCache,
-    persistRemoteQuestions: async (categoryId, candidates) => (
-      await dbStore.harvestRemoteQuestions(categoryId, candidates)
-    ),
+    persistRemoteQuestions: persistRemoteQuestionsInWorker,
     getCategoryId: () => configStore.config.remoteQuery.categoryId,
     getRequestTimeoutMs: () => configStore.config.remoteQuery.requestTimeoutMs,
     now: () => Date.now(),

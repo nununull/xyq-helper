@@ -15,7 +15,7 @@ import type { TrigramIndex } from '../utils/matcher'
 import { buildTrigramIndex, demoQuestions } from '../utils/matcher'
 import { normalizeQuestionText } from '../utils/normalizeText'
 import type { RemoteQuestionCandidate } from '../types/remoteQuestion'
-import { sanitizeRemoteAnswer, sanitizeRemoteText } from '../utils/sanitizeRemoteText'
+import { createRemoteQuestionRecords } from '../features/remote-query/remoteQuestionRecords'
 
 /** 生成兼容站点子目录部署的静态数据地址 */
 function getDataUrl(fileName: string) {
@@ -140,40 +140,7 @@ export const useDBStore = defineStore('db', {
     },
     /** 将 175DT 返回的完整题目批量去重入库，并立即更新本地检索索引。 */
     async harvestRemoteQuestions(category: string, candidates: RemoteQuestionCandidate[]) {
-      const existingByQuestion = new Map(
-        this.userQuestions.map((item) => [normalizeQuestionText(item.question), item]),
-      )
-      const changedByQuestion = new Map<string, UserQuestionRecord>()
-      const timestamp = new Date().toISOString()
-
-      for (const candidate of candidates) {
-        if (candidate.source !== '175dt') continue
-        const question = sanitizeRemoteText(candidate.question)
-        const answerText = sanitizeRemoteAnswer(candidate.answerText)
-        const key = normalizeQuestionText(question)
-        if (!key || !answerText) continue
-
-        const existing = existingByQuestion.get(key)
-        if (existing?.source === 'manual') continue
-        if (existing?.answerText === answerText && existing.category === category) continue
-
-        const record: UserQuestionRecord = {
-          ...existing,
-          question,
-          options: existing?.options ?? { A: '', B: '', C: '', D: '' },
-          answer: existing?.answer,
-          answerText,
-          category,
-          source: '175dt',
-          createdAt: existing?.createdAt ?? timestamp,
-          updatedAt: timestamp,
-          revision: (existing?.revision ?? 0) + 1,
-        }
-        existingByQuestion.set(key, record)
-        changedByQuestion.set(key, record)
-      }
-
-      const changed = [...changedByQuestion.values()]
+      const changed = createRemoteQuestionRecords(this.userQuestions, category, candidates)
       if (changed.length === 0) return 0
       await putUserQuestions(changed)
       this.userQuestions = await listUserQuestions()
