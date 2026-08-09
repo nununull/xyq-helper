@@ -601,6 +601,7 @@ export function createRecognitionController(
       let decision: RemoteMatchDecision = rankRemoteCandidates(parsed, [], ocrConfidence)
       const accumulatedCandidates = new Map<string, RemoteQuestionCandidate>()
       const remoteQueryStartedAt = now()
+      let queryFailure: Exclude<RemoteQueryResult, { kind: 'success' | 'empty' }> | null = null
 
       for (let batchStart = 0; batchStart < queryTerms.length; batchStart += REMOTE_QUERY_CONCURRENCY) {
         if (batchStart > 0 && now() - remoteQueryStartedAt >= REMOTE_QUERY_BUDGET_MS) break
@@ -620,8 +621,8 @@ export function createRecognitionController(
 
         for (const result of batchResults) {
           if (result.kind !== 'success' && result.kind !== 'empty') {
-            publishFailure(result)
-            return
+            queryFailure ??= result
+            continue
           }
           if (result.kind === 'empty') continue
 
@@ -642,6 +643,12 @@ export function createRecognitionController(
         const hasDecisiveLead = !runnerUp
           || (decision.best?.confidence ?? 0) - runnerUp.confidence >= 0.08
         if (decision.kind === 'confident' && decision.best?.answer && hasDecisiveLead) break
+      }
+
+      // 并行分支允许部分失败；只在所有分支都没有候选时发布网络错误。
+      if (accumulatedCandidates.size === 0 && queryFailure) {
+        publishFailure(queryFailure)
+        return
       }
 
       recognitionStore.setPhase('matching', '正在匹配候选题')
@@ -674,6 +681,8 @@ export function createRecognitionController(
     const captured = await captureFrame()
     const cacheChangedDuringCapture = synchronizeCacheGeneration()
     if (scheduledGeneration !== lifecycleGeneration || cacheChangedDuringCapture || !captured) return
+    // 远程求解期间不启动下一轮 OCR，避免“正在识别”状态覆盖查询状态并让校验标记丢弃答案。
+    if (activeRequestController) return
     if (captured.frameHash === lastStableFrameHash) {
       resumeStableSnapshotIfReady()
       return
