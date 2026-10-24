@@ -14,8 +14,6 @@ interface CaptureSurface {
 }
 
 let questionSurface: CaptureSurface | null = null
-let optionsSurface: CaptureSurface | null = null
-let answerSurface: CaptureSurface | null = null
 
 /** 向全部订阅者广播当前屏幕捕获轨道已经结束。 */
 function notifyCaptureEnded(): void {
@@ -36,8 +34,6 @@ function releaseActiveCapture(): void {
   activeVideoTrack = null
   activeTrackEndedHandler = null
   questionSurface = null
-  optionsSurface = null
-  answerSurface = null
 }
 
 /** 仅处理仍拥有当前捕获代次的轨道结束事件。 */
@@ -113,31 +109,24 @@ export function useScreenCapture() {
   function captureCurrentFrame(config: CaptureConfig): CaptureFrame | null {
     if (!videoElement) return null
 
-    if (config.answerRegion) {
-      answerSurface = prepareCaptureSurface(answerSurface, config.answerRegion)
-      if (!answerSurface) return null
-      const answerImage = captureRegion(videoElement, answerSurface, config.answerRegion)
-      return {
-        answerImage,
-        capturedAt: Date.now(),
-        frameHash: createFrameHash(answerImage),
-      }
+    if (!config.questionRegion || config.regionCoordinateSpace !== '175dt-question-v1') return null
+    const region = config.questionRegion
+    if (config.sourceSize && (config.sourceSize.width !== videoElement.videoWidth || config.sourceSize.height !== videoElement.videoHeight)) {
+      throw new Error('共享窗口尺寸已变化，请重新框选题干区域')
+    }
+    if (region.x < 0 || region.y < 0 || region.x + region.width > videoElement.videoWidth || region.y + region.height > videoElement.videoHeight) {
+      throw new Error('共享窗口尺寸已变化，请重新校准题干区域')
     }
 
-    if (!config.questionRegion || !config.optionsRegion) return null
-
     questionSurface = prepareCaptureSurface(questionSurface, config.questionRegion)
-    optionsSurface = prepareCaptureSurface(optionsSurface, config.optionsRegion)
-    if (!questionSurface || !optionsSurface) return null
+    if (!questionSurface) return null
 
     const questionImage = captureRegion(videoElement, questionSurface, config.questionRegion)
-    const optionsImage = captureRegion(videoElement, optionsSurface, config.optionsRegion)
 
     return {
       questionImage,
-      optionsImage,
       capturedAt: Date.now(),
-      frameHash: `${createFrameHash(questionImage)}-${createFrameHash(optionsImage)}`,
+      frameHash: createFrameHash(questionImage),
     }
   }
 

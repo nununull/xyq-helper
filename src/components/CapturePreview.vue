@@ -10,6 +10,7 @@ const props = defineProps<{
 }>()
 
 const video = ref<HTMLVideoElement | null>(null)
+const screenshot = ref<HTMLCanvasElement | null>(null)
 const videoSize = ref({ width: 0, height: 0 })
 
 const dockSide = computed<'left' | 'right'>(() => {
@@ -43,9 +44,20 @@ function releaseVideo(): void {
   if (video.value) video.value.srcObject = null
 }
 
+/** 显示实际会发送给175dt的题干小图，帮助发现框选偏移。 */
+function drawScreenshot(): void {
+  const image = props.frame?.questionImage
+  if (!image || !screenshot.value) return
+  screenshot.value.width = image.width
+  screenshot.value.height = image.height
+  screenshot.value.getContext('2d')?.putImageData(image, 0, 0)
+}
+
 watch(() => props.stream, () => void bindStream())
+watch(() => props.frame, drawScreenshot, { flush: 'post' })
 onMounted(() => {
   void bindStream()
+  drawScreenshot()
 })
 onBeforeUnmount(() => {
   releaseVideo()
@@ -62,12 +74,19 @@ onBeforeUnmount(() => {
     </div>
     <div v-if="stream" class="capture-preview-stage" :class="`answer-dock-${dockSide}`">
       <div class="capture-preview-video">
-        <video ref="video" muted playsinline @loadedmetadata="syncVideoSize" />
+        <video ref="video" muted playsinline @loadedmetadata="syncVideoSize" @resize="syncVideoSize" />
+        <svg v-if="questionRegion && videoSize.width" class="question-region-outline" :viewBox="`0 0 ${videoSize.width} ${videoSize.height}`" aria-hidden="true">
+          <rect :x="questionRegion.x" :y="questionRegion.y" :width="questionRegion.width" :height="questionRegion.height" />
+        </svg>
       </div>
       <div class="capture-preview-overlay">
         <slot />
       </div>
     </div>
     <p v-else class="muted">暂无共享画面，请先连接游戏窗口。</p>
+    <div v-if="frame" class="question-screenshot-preview">
+      <small>实际题干截图 · 仅在画面变化并稳定后上传</small>
+      <canvas ref="screenshot" aria-label="实际发送给175dt的题干截图" />
+    </div>
   </section>
 </template>

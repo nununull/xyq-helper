@@ -1,110 +1,25 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
-import {
-  clearAllRemoteQuestionCache,
-  clearRemoteQuestionCacheByCategory,
-} from '../composables/useLocalStorageDB'
 import { useConfigStore } from '../stores/config'
-import { useMatcherStore } from '../stores/matcher'
-import { useRecognitionStore } from '../stores/recognition'
-import { MAX_CAPTURE_FPS, MIN_CAPTURE_FPS } from '../types/config'
+import { CAPTURE_INTERVAL_MS, STABILITY_MS, MIN_QUERY_INTERVAL_MS, RATE_LIMIT_COOLDOWN_MS } from '../../shared/recognition-policy.mjs'
 
 const configStore = useConfigStore()
-const matcherStore = useMatcherStore()
-const recognitionStore = useRecognitionStore()
-const cacheMessage = ref('')
-const cacheError = ref('')
-const selectedCategoryId = computed(() => configStore.config.remoteQuery.categoryId)
 
-/** 保存当前抽帧频率，并将输入值同步为规范化后的结果。 */
-async function persistCaptureFps(): Promise<void> {
-  await configStore.setCaptureFps(configStore.config.capture.captureFps)
-}
-
-/** 保存语音播报开关。 */
+/** 保存答案语音播报开关。 */
 async function persistSpeechEnabled(): Promise<void> {
   await configStore.setSpeechEnabled(configStore.config.overlay.speechEnabled)
-}
-
-/** 在持久化缓存清理成功后废弃内存快照与展示结果。 */
-function invalidateClearedCache(): void {
-  recognitionStore.invalidateRemoteCache()
-  matcherStore.clear()
-}
-
-/** 清理当前选中活动分类的远程答案缓存。 */
-async function clearSelectedCategoryCache(): Promise<void> {
-  cacheMessage.value = ''
-  cacheError.value = ''
-  if (!selectedCategoryId.value) {
-    cacheError.value = '请先选择活动分类'
-    return
-  }
-
-  try {
-    await clearRemoteQuestionCacheByCategory(selectedCategoryId.value)
-    invalidateClearedCache()
-    cacheMessage.value = '当前分类缓存已清理'
-  } catch (error) {
-    cacheError.value = error instanceof Error ? error.message : '当前分类缓存清理失败'
-  }
-}
-
-/** 清理全部活动分类的远程答案缓存。 */
-async function clearRemoteCache(): Promise<void> {
-  cacheMessage.value = ''
-  cacheError.value = ''
-  try {
-    await clearAllRemoteQuestionCache()
-    invalidateClearedCache()
-    cacheMessage.value = '全部远程缓存已清理'
-  } catch (error) {
-    cacheError.value = error instanceof Error ? error.message : '远程缓存清理失败'
-  }
 }
 </script>
 
 <template>
   <section class="panel settings-panel">
-    <h2>设置</h2>
-    <label>
-      抽帧频率
-      <input
-        v-model.number="configStore.config.capture.captureFps"
-        :min="MIN_CAPTURE_FPS"
-        :max="MAX_CAPTURE_FPS"
-        step="1"
-        type="number"
-        @change="persistCaptureFps"
-      />
-      <small>帧/秒，可设置 {{ MIN_CAPTURE_FPS }}～{{ MAX_CAPTURE_FPS }}，修改后自动保存</small>
-    </label>
-    <label>
-      OCR 放大倍数
-      <input v-model.number="configStore.config.ocr.scale" min="1" max="4" step="0.5" type="number" />
-    </label>
-    <label>
-      最小置信度
-      <input v-model.number="configStore.config.matcher.minConfidence" min="0" max="1" step="0.05" type="number" />
-    </label>
+    <h2>识别方式</h2>
+    <p>本地每秒检查{{ 1000 / CAPTURE_INTERVAL_MS }}次画面，稳定{{ STABILITY_MS }}毫秒后才上传。</p>
+    <p>两次查询至少间隔{{ MIN_QUERY_INTERVAL_MS / 1000 }}秒，同一画面只自动查询一次。</p>
+    <p>失败后请手动重试；175dt限流时冷却{{ RATE_LIMIT_COOLDOWN_MS / 1000 }}秒。</p>
     <label class="toggle-setting">
-      <span>
-        语音播报答案
-        <small>识别到新答案时播报选项与答案文本</small>
-      </span>
-      <input
-        v-model="configStore.config.overlay.speechEnabled"
-        type="checkbox"
-        @change="persistSpeechEnabled"
-      />
+      <span>语音播报答案<small>直接播报175dt返回的答案文本</small></span>
+      <input v-model="configStore.config.overlay.speechEnabled" type="checkbox" @change="persistSpeechEnabled" />
     </label>
-    <div class="cache-actions">
-      <button type="button" :disabled="!selectedCategoryId" @click="clearSelectedCategoryCache">
-        清理当前分类缓存
-      </button>
-      <button type="button" @click="clearRemoteCache">清理全部远程缓存</button>
-    </div>
-    <p v-if="cacheMessage" class="success-text">{{ cacheMessage }}</p>
-    <p v-if="cacheError" class="error-text">{{ cacheError }}</p>
+    <small>只发送题干小图，不上传整张游戏窗口。游戏分辨率或题目位置变化后，请重新框选。</small>
   </section>
 </template>

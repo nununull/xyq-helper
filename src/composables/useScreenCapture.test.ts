@@ -223,4 +223,25 @@ describe('屏幕捕获结束监听', () => {
     capture.stopCapture()
     expect(capture.getActiveStream()).toBeNull()
   })
+
+  it('只裁剪题干，并在共享窗口分辨率改变后要求重新框选', async () => {
+    const { stream } = createTrackAndStream()
+    const video = { play: vi.fn().mockResolvedValue(undefined), videoWidth: 1024, videoHeight: 768 }
+    const image = { width: 300, height: 80, data: new Uint8ClampedArray(300 * 80 * 4) } as ImageData
+    const context = { clearRect: vi.fn(), drawImage: vi.fn(), getImageData: vi.fn().mockReturnValue(image) }
+    const canvas = { width: 0, height: 0, getContext: vi.fn().mockReturnValue(context) }
+    vi.stubGlobal('navigator', { mediaDevices: { getDisplayMedia: vi.fn().mockResolvedValue(stream) } })
+    vi.stubGlobal('document', { createElement: vi.fn().mockReturnValueOnce(video).mockReturnValue(canvas) })
+    const capture = useScreenCapture()
+    await capture.startCapture()
+    const config = {
+      questionRegion: { x: 10, y: 20, width: 300, height: 80 }, optionsRegion: null,
+      sourceSize: { width: 1024, height: 768 }, regionCoordinateSpace: '175dt-question-v1' as const,
+      devicePixelRatio: 1, captureFps: 4,
+    }
+    expect(capture.captureCurrentFrame(config)?.questionImage).toBe(image)
+    expect(context.drawImage).toHaveBeenCalledWith(video, 10, 20, 300, 80, 0, 0, 300, 80)
+    video.videoWidth = 1280
+    expect(() => capture.captureCurrentFrame(config)).toThrow('重新框选')
+  })
 })

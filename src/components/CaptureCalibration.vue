@@ -8,11 +8,10 @@ import type { CaptureRegion } from '../types/capture'
 
 const props = defineProps<{
   stream: MediaStream
-  initialAnswerRegion: CaptureRegion | null
 }>()
 
 const emit = defineEmits<{
-  completed: [answerRegion: CaptureRegion]
+  completed: [questionRegion: CaptureRegion, sourceSize: { width: number; height: number }]
   cancel: []
 }>()
 
@@ -21,15 +20,13 @@ const stage = ref<HTMLElement | null>(null)
 const selecting = ref(false)
 const startPoint = ref({ x: 0, y: 0 })
 const draftRegion = ref<CaptureRegion | null>(null)
-const answerRegion = ref<CaptureRegion | null>(
-  props.initialAnswerRegion ? { ...props.initialAnswerRegion } : null,
-)
+const questionRegion = ref<CaptureRegion | null>(null)
 const previewSize = ref({ width: 0, height: 0 })
 const videoSize = ref({ width: 0, height: 0 })
 let resizeObserver: ResizeObserver | null = null
 
-const answerPreviewRegion = computed(() => toPreviewRegion(answerRegion.value))
-const visibleRegion = computed(() => draftRegion.value ?? answerPreviewRegion.value)
+const questionPreviewRegion = computed(() => toPreviewRegion(questionRegion.value))
+const visibleRegion = computed(() => draftRegion.value ?? questionPreviewRegion.value)
 
 /** 将视频像素区域换算为当前预览中的展示区域。 */
 function toPreviewRegion(region: CaptureRegion | null): CaptureRegion | null {
@@ -43,6 +40,11 @@ function syncStageSize(): void {
   const source = video.value
   if (bounds) previewSize.value = { width: bounds.width, height: bounds.height }
   if (source?.videoWidth && source.videoHeight) {
+    if (videoSize.value.width && (videoSize.value.width !== source.videoWidth || videoSize.value.height !== source.videoHeight)) {
+      questionRegion.value = null
+      draftRegion.value = null
+      selecting.value = false
+    }
     videoSize.value = { width: source.videoWidth, height: source.videoHeight }
   }
 }
@@ -66,7 +68,7 @@ function readLocalPoint(event: PointerEvent): { x: number; y: number } | null {
   }
 }
 
-/** 开始框选完整答题窗口。 */
+/** 开始框选题干文字或看图题的小图。 */
 function startSelection(event: PointerEvent): void {
   const point = readLocalPoint(event)
   if (!point) return
@@ -98,7 +100,8 @@ function finishSelection(event: PointerEvent): void {
   const preview = stage.value?.getBoundingClientRect()
   const source = video.value
   if (!region || !preview || !source || region.width < 8 || region.height < 8) return
-  answerRegion.value = convertPreviewRegionToVideoPixels(
+  videoSize.value = { width: source.videoWidth, height: source.videoHeight }
+  questionRegion.value = convertPreviewRegionToVideoPixels(
     region,
     { width: preview.width, height: preview.height },
     { width: source.videoWidth, height: source.videoHeight },
@@ -106,14 +109,15 @@ function finishSelection(event: PointerEvent): void {
   draftRegion.value = null
 }
 
-/** 确认并提交完整答题区域。 */
+/** 提交题干选框和坐标所属的原始窗口尺寸。 */
 function confirmCalibration(): void {
-  if (answerRegion.value) emit('completed', answerRegion.value)
+  syncStageSize()
+  if (questionRegion.value && videoSize.value.width && videoSize.value.height) emit('completed', questionRegion.value, { ...videoSize.value })
 }
 
 /** 清空旧区域并等待重新框选。 */
 function resetSelection(): void {
-  answerRegion.value = null
+  questionRegion.value = null
   draftRegion.value = null
 }
 
@@ -143,11 +147,11 @@ onBeforeUnmount(() => {
   <section class="panel calibration-panel">
     <div class="calibration-header">
       <div>
-        <h2>校准答题区域</h2>
-        <p>拖动框选包含题干和全部选项的完整答题窗口，只需框选一次。</p>
+        <h2>框选题干</h2>
+        <p>只框选题目文字，保留完整题干；不要包含选项、倒计时、头像或装饰。看图题只选待识别的小图。</p>
       </div>
       <div class="calibration-legend" aria-label="选框图例">
-        <span><i class="answer-color" />完整答题区域</span>
+        <span><i class="answer-color" />将发送给175dt的题干</span>
       </div>
     </div>
     <div
@@ -157,23 +161,24 @@ onBeforeUnmount(() => {
       @pointermove="moveSelection"
       @pointerup="finishSelection"
     >
-      <video ref="video" muted playsinline @loadedmetadata="syncStageSize" />
+      <video ref="video" muted playsinline @loadedmetadata="syncStageSize" @resize="syncStageSize" />
       <div
         v-if="visibleRegion"
         class="calibration-selection answer-selection active"
         :style="regionStyle(visibleRegion)"
       >
-        <span v-if="!draftRegion">答题区域</span>
+        <span v-if="!draftRegion">题干区域</span>
       </div>
     </div>
     <div class="calibration-actions">
       <div>
+        <small v-if="questionRegion">{{ Math.round(questionRegion.width) }} × {{ Math.round(questionRegion.height) }} 像素</small>
         <button type="button" @click="resetSelection">重新框选</button>
       </div>
       <div>
         <button type="button" @click="emit('cancel')">取消校准</button>
-        <button class="primary-action" type="button" :disabled="!answerRegion" @click="confirmCalibration">
-          确认校准
+        <button class="primary-action" type="button" :disabled="!questionRegion" @click="confirmCalibration">
+          用这个题干框开始识别
         </button>
       </div>
     </div>

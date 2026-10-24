@@ -1,4 +1,5 @@
 import type { CaptureConfig } from './capture'
+import { CAPTURE_INTERVAL_MS, CLIENT_TIMEOUT_MS } from '../../shared/recognition-policy.mjs'
 
 export const MIN_CAPTURE_FPS = 1
 export const MAX_CAPTURE_FPS = 30
@@ -36,8 +37,8 @@ export const defaultAppConfig: AppConfig = {
     questionRegion: null,
     optionsRegion: null,
     regionCoordinateSpace: null,
-    devicePixelRatio: window.devicePixelRatio || 1,
-    captureFps: 2,
+    devicePixelRatio: typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1,
+    captureFps: 1_000 / CAPTURE_INTERVAL_MS,
   },
   ocr: {
     grayscale: true,
@@ -51,7 +52,7 @@ export const defaultAppConfig: AppConfig = {
   },
   remoteQuery: {
     categoryId: '',
-    requestTimeoutMs: 1_500,
+    requestTimeoutMs: CLIENT_TIMEOUT_MS,
   },
   overlay: {
     opacity: 0.88,
@@ -75,24 +76,24 @@ export function normalizeCaptureFps(value: unknown): number {
 /** 将持久化配置与当前默认值按分组深层合并，兼容旧版本缺失字段。 */
 export function mergeAppConfig(config: PartialAppConfig | null | undefined): AppConfig {
   const capture = { ...defaultAppConfig.capture, ...config?.capture }
+  const calibrated = capture.regionCoordinateSpace === '175dt-question-v1'
   return {
     capture: {
-      ...capture,
+      devicePixelRatio: capture.devicePixelRatio,
       captureFps: normalizeCaptureFps(capture.captureFps),
-      ...(capture.answerRegion ? { answerRegion: { ...capture.answerRegion } } : {}),
-      questionRegion: capture.questionRegion ? { ...capture.questionRegion } : null,
-      optionsRegion: capture.optionsRegion ? { ...capture.optionsRegion } : null,
+      regionCoordinateSpace: calibrated ? '175dt-question-v1' : null,
+      questionRegion: calibrated && capture.questionRegion ? { ...capture.questionRegion } : null,
+      optionsRegion: null,
+      sourceSize: calibrated && capture.sourceSize ? { ...capture.sourceSize } : null,
     },
     ocr: { ...defaultAppConfig.ocr, ...config?.ocr },
     matcher: { ...defaultAppConfig.matcher, ...config?.matcher },
-    remoteQuery: { ...defaultAppConfig.remoteQuery, ...config?.remoteQuery },
+    remoteQuery: { ...defaultAppConfig.remoteQuery, ...config?.remoteQuery, requestTimeoutMs: CLIENT_TIMEOUT_MS },
     overlay: { ...defaultAppConfig.overlay, ...config?.overlay },
   }
 }
 
-/** 判断题干和选项区域是否都属于当前支持的视频像素坐标系。 */
+/** 只接受175dt题干选框，旧版完整窗口坐标需要重新框选。 */
 export function hasValidCaptureRegions(capture: CaptureConfig): boolean {
-  return capture.regionCoordinateSpace === 'video-pixel-v1'
-    && (capture.answerRegion !== null && capture.answerRegion !== undefined
-      || capture.questionRegion !== null && capture.optionsRegion !== null)
+  return capture.regionCoordinateSpace === '175dt-question-v1' && Boolean(capture.questionRegion && capture.sourceSize)
 }

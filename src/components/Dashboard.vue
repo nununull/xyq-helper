@@ -1,23 +1,16 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, shallowRef, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import CaptureCalibration from './CaptureCalibration.vue'
 import CapturePreview from './CapturePreview.vue'
 import AnswerOverlay from './AnswerOverlay.vue'
 import CategorySelector from './CategorySelector.vue'
-import OCRResult from './OCRResult.vue'
-import QuestionBankManager from './QuestionBankManager.vue'
 import SettingsPanel from './SettingsPanel.vue'
-import UnknownQuestions from './UnknownQuestions.vue'
-import { useOCR } from '../composables/useOCR'
 import { useScreenCapture } from '../composables/useScreenCapture'
 import { useRecognitionController } from '../features/recognition/useRecognitionController'
 import { getCaptureErrorMessage, useCaptureStore } from '../stores/capture'
 import { useConfigStore } from '../stores/config'
-import { useMatcherStore } from '../stores/matcher'
-import { useOCRStore } from '../stores/ocr'
 import { useRecognitionStore } from '../stores/recognition'
-import { parseQuestion } from '../utils/parseQuestion'
-import { applyAnswerRegion } from '../features/setup/applyCaptureRegion'
+import { applyQuestionRegion } from '../features/setup/applyCaptureRegion'
 import { hasValidCaptureRegions } from '../types/config'
 import type { CaptureRegion } from '../types/capture'
 import { activityCategoryGroups } from '../data/activityCategories'
@@ -25,281 +18,137 @@ import { useAnswerPictureInPicture } from '../composables/useAnswerPictureInPict
 
 const captureStore = useCaptureStore()
 const configStore = useConfigStore()
-const ocrStore = useOCRStore()
-const matcherStore = useMatcherStore()
 const recognitionStore = useRecognitionStore()
 const screenCapture = useScreenCapture()
-const ocr = useOCR()
 const controller = useRecognitionController()
 const answerPictureInPicture = useAnswerPictureInPicture()
 const previewStream = shallowRef<MediaStream | null>(null)
-const calibrating = shallowRef(false)
-const focusMode = shallowRef(false)
-const activePage = shallowRef<'recognition' | 'questionBank'>('recognition')
-const pageSwitching = shallowRef(false)
-const ocrPreparationVisible = shallowRef(false)
-const pendingCaptureAfterPreparation = shallowRef(false)
-const ocrRuntimeLabel = computed(() => ({
-  uninitialized: '尚未初始化',
-  worker: 'Worker 后台线程',
-  'main-thread': '主线程兼容模式',
-  error: '初始化失败',
-}[ocr.runtimeMode.value]))
-const ocrPreparationPercent = computed(() => {
-  if (!ocr.preparation.totalBytes) return 0
-  return Math.min(100, Math.round(
-    ocr.preparation.loadedBytes / ocr.preparation.totalBytes * 100,
-  ))
-})
-const ocrPreparationBusy = computed(() => [
-  'downloading',
-  'loading-cache',
-  'loading-runtime',
-  'initializing',
-].includes(ocr.preparation.phase))
-const ocrPreparationTitle = computed(() => ({
-  checking: '正在检查 OCR 组件',
-  missing: '首次使用需要准备 OCR 组件',
-  downloading: '正在下载 OCR 组件',
-  'loading-cache': '正在读取本地 OCR 组件',
-  'loading-runtime': '正在加载 OCR 运行环境',
-  initializing: '正在初始化 OCR 引擎',
-  ready: 'OCR 已准备完成',
-  error: 'OCR 组件准备失败',
-}[ocr.preparation.phase]))
-
-/** 将内部捕获状态转换为面向用户的中文文案。 */
-const captureStatusLabel = computed(() => ({
-  idle: '待连接',
-  requesting: '授权中',
-  active: '识别中',
-  paused: '已暂停',
-  error: '异常',
-}[captureStore.status] ?? captureStore.status))
-
+const calibrating = ref(false)
+const focusMode = ref(false)
+const serviceReady = ref<boolean | null>(null)
+let calibrationRevision = 0
 const selectedCategoryId = computed(() => configStore.config.remoteQuery.categoryId)
-const selectedCategoryName = computed(() => {
-  for (const group of activityCategoryGroups) {
-    const category = group.categories.find((item) => item.id === selectedCategoryId.value)
-    if (category) return category.name
-  }
-  return ''
-})
+const selectedCategoryName = computed(() => activityCategoryGroups.flatMap(group => group.categories)
+  .find(category => category.id === selectedCategoryId.value)?.name ?? '')
 const hasCalibration = computed(() => hasValidCaptureRegions(configStore.config.capture))
-const calibratedAnswerRegion = computed(() => {
-  const capture = configStore.config.capture
-  if (capture.answerRegion) return capture.answerRegion
-  if (!capture.questionRegion || !capture.optionsRegion) return null
-  const left = Math.min(capture.questionRegion.x, capture.optionsRegion.x)
-  const top = Math.min(capture.questionRegion.y, capture.optionsRegion.y)
-  const right = Math.max(
-    capture.questionRegion.x + capture.questionRegion.width,
-    capture.optionsRegion.x + capture.optionsRegion.width,
-  )
-  const bottom = Math.max(
-    capture.questionRegion.y + capture.questionRegion.height,
-    capture.optionsRegion.y + capture.optionsRegion.height,
-  )
-  return { x: left, y: top, width: right - left, height: bottom - top }
-})
+const questionRegion = computed(() => hasCalibration.value ? configStore.config.capture.questionRegion : null)
+const captureStatusLabel = computed(() => ({ idle: '待连接', requesting: '选择窗口中', active: '已连接', paused: '已停止', error: '异常' }[captureStore.status]))
 const actionHint = computed(() => {
-  if (!selectedCategoryId.value) return '请先选择左侧活动分类，再连接游戏画面。'
-  if (captureStore.status === 'requesting') return `已选择「${selectedCategoryName.value}」，正在等待浏览器共享授权。`
-  if (calibrating.value) return '请在下方实时画面中依次框选题干和选项。'
-  if (captureStore.status === 'active') return '游戏画面已连接，连续识别正在运行。'
-  return hasCalibration.value
-    ? `已选择「${selectedCategoryName.value}」，点击“连接游戏画面”开始识别。`
-    : `已选择「${selectedCategoryName.value}」，连接游戏画面后请先完成区域校准。`
+  if (!selectedCategoryId.value) return '先选择活动，再连接游戏窗口。'
+  if (calibrating.value) return '只框选题干文字；看图题只框选待识别的小图。不包含选项、倒计时、头像和装饰。'
+  if (previewStream.value) return '只在题干稳定后查询175dt。同一画面只自动查询一次，换题后自动继续。'
+  return '连接游戏窗口后框选题干。原始题干小图会发送到175dt识别。'
 })
-const parsedQuestion = computed(() => (
-  ocrStore.lastResult ? parseQuestion(ocrStore.lastResult) : null
-))
 
-/** 播报答案文本，不播报可能因选项乱序而失真的字母。 */
-function speakAnswer(): void {
-  const result = matcherStore.result
-  if (!configStore.config.overlay.speechEnabled || !result || !('speechSynthesis' in window)) return
-
-  const optionText = result.answerText?.trim() ?? ''
-  const answerText = optionText ? `答案，${optionText}` : '暂未识别到答案文本'
-  const utterance = new SpeechSynthesisUtterance(answerText)
-  utterance.lang = 'zh-CN'
-  utterance.rate = 1.12
-  window.speechSynthesis.cancel()
-  window.speechSynthesis.speak(utterance)
+/** 检查当前站点是否具有175dt同源识别入口。 */
+async function checkService(): Promise<void> {
+  serviceReady.value = null
+  try {
+    const response = await fetch('/api/175dt/health', { signal: AbortSignal.timeout(3000) })
+    const payload = await response.json()
+    serviceReady.value = response.ok && payload.available === true
+  } catch {
+    serviceReady.value = false
+  }
 }
 
-watch(
-  () => matcherStore.result
-    ? `${matcherStore.result.questionId}:${matcherStore.result.answer}:${matcherStore.result.answerText ?? ''}`
-    : '',
-  (signature, previousSignature) => {
-    if (signature && signature !== previousSignature) speakAnswer()
-  },
-)
-/** 获取屏幕共享，并根据区域配置进入校准或连续识别。 */
-async function startCapture(): Promise<void> {
-  if (
-    !selectedCategoryId.value
-    || captureStore.status === 'requesting'
-    || captureStore.status === 'active'
-  ) return
+/** 使用175dt返回的答案文本播报，不推断选项字母。 */
+function speakAnswer(): void {
+  const answer = recognitionStore.candidates[0]?.answerText
+  if (!configStore.config.overlay.speechEnabled || !answer || !('speechSynthesis' in window)) return
+  window.speechSynthesis.cancel()
+  const utterance = new SpeechSynthesisUtterance(`答案，${answer}`)
+  utterance.lang = 'zh-CN'
+  utterance.rate = 1.12
+  window.speechSynthesis.speak(utterance)
+}
+watch(() => recognitionStore.candidates[0], candidate => {
+  if (candidate) speakAnswer()
+  else window.speechSynthesis?.cancel()
+})
 
+/** 从本次点击直接请求窗口共享，避免丢失浏览器要求的用户手势。 */
+async function startCapture(): Promise<void> {
+  if (!selectedCategoryId.value || !serviceReady.value || captureStore.status === 'requesting' || previewStream.value) return
   try {
     captureStore.setStatus('requesting')
-    const ownsCapture = await screenCapture.startCapture()
-    if (!ownsCapture) return
+    if (!await screenCapture.startCapture()) return
     previewStream.value = screenCapture.getActiveStream()
-    ocrPreparationVisible.value = true
-    await ocr.initializeOCR()
-    ocrPreparationVisible.value = false
     captureStore.setStatus('active')
     focusMode.value = true
-    if (hasCalibration.value) {
-      controller.start()
-    } else {
-      calibrating.value = true
-    }
+    if (hasCalibration.value) controller.start()
+    else calibrating.value = true
   } catch (error) {
     controller.stop()
     screenCapture.stopCapture()
     previewStream.value = null
-    calibrating.value = false
-    focusMode.value = false
-    ocrPreparationVisible.value = ocr.preparation.phase === 'error'
     captureStore.setError(getCaptureErrorMessage(error))
   }
 }
 
-/** 根据本地缓存状态决定直接连接画面或先征求大文件下载确认。 */
-function requestCapture(): void {
-  if (
-    !selectedCategoryId.value
-    || captureStore.status === 'requesting'
-    || captureStore.status === 'active'
-  ) return
-
-  if (ocr.preparation.phase === 'checking' || ocr.preparation.phase === 'missing') {
-    pendingCaptureAfterPreparation.value = true
-    ocrPreparationVisible.value = true
-    return
-  }
-
-  void startCapture()
-}
-
-/** 从确认按钮发起屏幕授权，并在授权完成后下载与初始化 OCR。 */
-function confirmOCRPreparation(): void {
-  pendingCaptureAfterPreparation.value = false
-  void startCapture()
-}
-
-/** 关闭首次下载提示并取消本次连接意图。 */
-function cancelOCRPreparation(): void {
-  if (ocrPreparationBusy.value) return
-  pendingCaptureAfterPreparation.value = false
-  ocrPreparationVisible.value = false
-}
-
-/** 将字节数格式化为适合下载提示展示的兆字节。 */
-function formatMegabytes(bytes: number): string {
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`
-}
-
-/** 停止连续识别与当前屏幕共享。 */
+/** 停止共享、上传和播报，同时撤下上一题答案。 */
 function stopCapture(): void {
+  calibrationRevision += 1
   controller.stop()
   screenCapture.stopCapture()
   previewStream.value = null
   calibrating.value = false
   focusMode.value = false
+  captureStore.lastFrame = null
   captureStore.setStatus('paused')
+  window.speechSynthesis?.cancel()
 }
 
-/** 切换活动分类前停止并重置旧分类识别上下文。 */
+/** 切换活动时废弃旧请求，沿用仍然打开的共享窗口。 */
 async function selectCategory(categoryId: string): Promise<void> {
   if (categoryId === selectedCategoryId.value) return
   controller.stop()
-  controller.resetForCategory()
-  screenCapture.stopCapture()
-  previewStream.value = null
-  calibrating.value = false
-  focusMode.value = false
-  captureStore.setStatus('paused')
   await configStore.selectActivityCategory(categoryId)
+  if (previewStream.value && !calibrating.value && hasCalibration.value) controller.start()
 }
 
-/** 处理用户从浏览器共享控件主动结束捕获。 */
-function handleCaptureEnded(): void {
-  controller.stop()
-  previewStream.value = null
-  calibrating.value = false
-  focusMode.value = false
-  captureStore.setStatus('paused')
-  captureStore.error = '屏幕共享已停止，请重新连接游戏画面'
-}
-
-/** 暂停识别并在当前共享画面上重新校准。 */
+/** 暂停上传，在当前共享画面上重新框选题干。 */
 function beginCalibration(): void {
+  calibrationRevision += 1
   controller.stop()
-  controller.resetForCategory()
   calibrating.value = true
   focusMode.value = true
 }
 
-/** 切换共享画面的专注布局，让用户按需显示或收起辅助面板。 */
-function toggleFocusMode(): void {
-  focusMode.value = !focusMode.value
+/** 保存题干选框和原始窗口尺寸，立即恢复自动识别。 */
+async function completeCalibration(region: CaptureRegion, sourceSize: { width: number; height: number }): Promise<void> {
+  const revision = ++calibrationRevision
+  const stream = previewStream.value
+  if (!stream || !calibrating.value) return
+  try {
+    await configStore.update(applyQuestionRegion(configStore.config, region, sourceSize))
+    if (revision !== calibrationRevision || stream !== previewStream.value || !calibrating.value) return
+    captureStore.error = ''
+    calibrating.value = false
+    controller.start()
+  } catch (error) {
+    if (revision === calibrationRevision) captureStore.error = error instanceof Error ? error.message : '保存题干选框失败'
+  }
 }
 
-/** 保存完整答题区域并立即启动连续识别。 */
-async function completeCalibration(answerRegion: CaptureRegion): Promise<void> {
-  await configStore.update(applyAnswerRegion(configStore.config, answerRegion))
-  calibrating.value = false
-  controller.start()
-}
-
-/** 取消校准；存在旧有效区域时恢复连续识别。 */
+/** 取消重新框选，已有有效题干框时继续监测。 */
 function cancelCalibration(): void {
+  calibrationRevision += 1
   calibrating.value = false
   if (hasCalibration.value) controller.start()
 }
 
-/** 让浏览器先绘制点击反馈，再挂载数据量较大的题库页面。 */
-async function switchPage(page: 'recognition' | 'questionBank'): Promise<void> {
-  if (pageSwitching.value || activePage.value === page) return
-  pageSwitching.value = true
-  await nextTick()
-  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-  activePage.value = page
-  await nextTick()
-  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-  pageSwitching.value = false
-}
-
-/** 打开题库维护页前停止捕获，避免后台识别继续运行。 */
-function openQuestionBank(): void {
+/** 浏览器停止共享后释放界面状态和在途请求。 */
+function handleCaptureEnded(): void {
   stopCapture()
-  void switchPage('questionBank')
-}
-
-/** 返回实时识别页面。 */
-function closeQuestionBank(): void {
-  void switchPage('recognition')
+  captureStore.error = '屏幕共享已停止，请重新连接游戏画面'
 }
 
 const unsubscribeCaptureEnded = screenCapture.onCaptureEnded(handleCaptureEnded)
-
-onMounted(() => {
-  void ocr.inspectAssets()
-})
-
+onMounted(() => { void checkService() })
 onBeforeUnmount(() => {
   unsubscribeCaptureEnded()
-  controller.stop()
-  screenCapture.stopCapture()
-  window.speechSynthesis?.cancel()
-  void ocr.terminateOCR()
+  stopCapture()
 })
 </script>
 
@@ -308,237 +157,51 @@ onBeforeUnmount(() => {
     <header class="topbar">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">答</span>
-        <div>
-          <h1>梦幻答题助手</h1>
-          <p>本地识别 · 答案不离开浏览器</p>
-        </div>
+        <div><h1>梦幻答题助手</h1><p>175dt截图搜题 · 稳定后查询</p></div>
       </div>
       <div class="topbar-actions">
-        <button
-          class="ghost-action"
-          type="button"
-          :disabled="pageSwitching"
-          @click="activePage === 'recognition' ? openQuestionBank() : closeQuestionBank()"
-        >
-          {{ activePage === 'recognition' ? '题库维护' : '返回识别' }}
+        <span v-if="selectedCategoryName" class="selected-category-pill"><small>当前活动</small><strong>{{ selectedCategoryName }}</strong></span>
+        <span class="status-pill" :data-status="captureStore.status"><i />{{ captureStatusLabel }}</span>
+        <button class="floating-answer-action" type="button" :aria-pressed="answerPictureInPicture.opened.value" :disabled="!answerPictureInPicture.supported" @click="answerPictureInPicture.toggle">
+          {{ answerPictureInPicture.opened.value ? '关闭悬浮' : '悬浮答案' }}
         </button>
-        <template v-if="activePage === 'recognition'">
-          <span
-            v-if="selectedCategoryName"
-            :key="selectedCategoryId"
-            class="selected-category-pill"
-            title="当前活动分类"
-          >
-            <small>当前活动</small>
-            <strong>{{ selectedCategoryName }}</strong>
-          </span>
-          <span class="status-pill" :data-status="captureStore.status">
-            <i />{{ captureStatusLabel }}
-          </span>
-          <button
-            class="floating-answer-action"
-            :class="{ active: answerPictureInPicture.opened.value }"
-            type="button"
-            :aria-pressed="answerPictureInPicture.opened.value"
-            :disabled="!answerPictureInPicture.supported"
-            :title="answerPictureInPicture.supported
-              ? '打开始终置顶的小窗，可拖到游戏答题区域旁边'
-              : '请使用最新版 Chrome 或 Edge'"
-            @click="answerPictureInPicture.toggle"
-          >
-            {{ answerPictureInPicture.opened.value ? '关闭悬浮' : '悬浮答案' }}
-          </button>
-          <button
-            class="focus-action"
-            :class="{ active: focusMode }"
-            type="button"
-            :aria-pressed="focusMode"
-            :disabled="!previewStream"
-            @click="toggleFocusMode"
-          >
-            {{ focusMode ? '退出专注' : '放大画面' }}
-          </button>
-          <button
-            class="primary-action"
-            type="button"
-            :disabled="!selectedCategoryId || captureStore.status === 'requesting' || captureStore.status === 'active'"
-            @click="requestCapture"
-          >
-            连接游戏画面
-          </button>
-          <button
-            class="subtle-action"
-            type="button"
-            :disabled="captureStore.status !== 'active' && captureStore.status !== 'requesting'"
-            @click="stopCapture"
-          >
-            停止
-          </button>
-          <button
-            class="subtle-action"
-            type="button"
-            :disabled="captureStore.status !== 'active' || calibrating"
-            @click="controller.retry"
-          >
-            手动重试
-          </button>
-          <button
-            class="subtle-action"
-            type="button"
-            :disabled="captureStore.status !== 'active' || calibrating"
-            @click="beginCalibration"
-          >
-            重新校准
-          </button>
-        </template>
+        <button class="focus-action" type="button" :disabled="!previewStream" :aria-pressed="focusMode" @click="focusMode = !focusMode">{{ focusMode ? '退出专注' : '放大画面' }}</button>
+        <button class="primary-action" type="button" :disabled="!selectedCategoryId || !serviceReady || captureStore.status === 'requesting' || Boolean(previewStream)" @click="startCapture">连接游戏画面</button>
+        <button class="subtle-action" type="button" :disabled="!previewStream && captureStore.status !== 'requesting'" @click="stopCapture">停止</button>
+        <button class="subtle-action" type="button" :disabled="!previewStream || calibrating" @click="controller.retry">手动重试</button>
+        <button class="subtle-action" type="button" :disabled="!previewStream || calibrating" @click="beginCalibration">重新框选</button>
       </div>
     </header>
-
-    <div v-if="pageSwitching" class="page-switch-feedback" role="status">
-      <span class="page-switch-spinner" />
-      {{ activePage === 'recognition' ? '正在打开题库…' : '正在返回识别…' }}
-    </div>
-
-    <QuestionBankManager v-if="activePage === 'questionBank'" @close="closeQuestionBank" />
-
-    <div v-else class="dashboard-grid" :class="{ 'focus-mode': focusMode }">
+    <section v-if="serviceReady === false" class="panel service-unavailable" role="alert">
+      <strong>当前站点未连接175dt识别服务</strong>
+      <p>请通过本机的开发、预览或启动命令打开助手，纯静态托管页面无法完成截图上传。</p>
+      <button type="button" @click="checkService">重新连接服务</button>
+    </section>
+    <div class="dashboard-grid" :class="{ 'focus-mode': focusMode }">
       <CategorySelector :selected-id="selectedCategoryId" @select="selectCategory" />
-
       <main class="workspace">
         <p class="panel flow-hint">{{ actionHint }}</p>
-        <CaptureCalibration
-          v-if="calibrating && previewStream"
-          :stream="previewStream"
-          :initial-answer-region="calibratedAnswerRegion"
-          @completed="completeCalibration"
-          @cancel="cancelCalibration"
-        />
-        <CapturePreview
-          v-else
-          :stream="previewStream"
-          :frame="captureStore.lastFrame"
-          :question-region="calibratedAnswerRegion"
-          :focus-mode="focusMode"
-        >
-          <AnswerOverlay
-            :result="matcherStore.result"
-            :candidates="matcherStore.remoteMatches"
-            :parsed-question="parsedQuestion"
-            :message="recognitionStore.message"
-            :phase="recognitionStore.phase"
-            :running="recognitionStore.running"
-          />
+        <CaptureCalibration v-if="calibrating && previewStream" :stream="previewStream" @completed="completeCalibration" @cancel="cancelCalibration" />
+        <CapturePreview v-else :stream="previewStream" :frame="captureStore.lastFrame" :question-region="questionRegion" :focus-mode="focusMode">
+          <AnswerOverlay :candidates="recognitionStore.candidates" :message="recognitionStore.message" :phase="recognitionStore.phase" :running="recognitionStore.running" />
         </CapturePreview>
       </main>
-
       <aside class="rightbar">
-        <OCRResult :result="ocrStore.lastResult" :parsed="parsedQuestion" />
         <section class="panel">
-          <h2>状态</h2>
-          <p>阶段：{{ recognitionStore.message }}</p>
-          <p>OCR 引擎：{{ ocrRuntimeLabel }}</p>
-          <p v-if="matcherStore.result?.resultSource">来源：{{ matcherStore.result.resultSource }}</p>
-          <p v-if="matcherStore.result?.durationMs">总耗时：{{ matcherStore.result.durationMs }}ms</p>
-          <p v-if="matcherStore.result?.warning" class="warning-text">{{ matcherStore.result.warning }}</p>
+          <h2>识别状态</h2>
+          <p role="status">{{ recognitionStore.message || '等待连接游戏画面' }}</p>
+          <p>来源：175dt截图搜索</p>
+          <p>本次已查询 {{ recognitionStore.requestCount }} 次</p>
+          <p v-if="recognitionStore.durationMs !== null">最近耗时 {{ recognitionStore.durationMs }}ms</p>
           <p v-if="captureStore.error" class="error-text">{{ captureStore.error }}</p>
-          <p v-if="matcherStore.error" class="error-text">{{ matcherStore.error }}</p>
+          <p class="muted">画面检查在本地完成，不等于向175dt发请求。</p>
         </section>
         <SettingsPanel />
-        <UnknownQuestions />
       </aside>
     </div>
-
     <Teleport v-if="answerPictureInPicture.mountTarget.value" :to="answerPictureInPicture.mountTarget.value">
-      <div class="floating-answer-shell">
-        <AnswerOverlay
-          compact
-          :result="matcherStore.result"
-          :candidates="matcherStore.remoteMatches"
-          :parsed-question="parsedQuestion"
-          :message="recognitionStore.message"
-          :phase="recognitionStore.phase"
-          :running="recognitionStore.running"
-        />
-      </div>
+      <div class="floating-answer-shell"><AnswerOverlay compact :candidates="recognitionStore.candidates" :message="recognitionStore.message" :phase="recognitionStore.phase" :running="recognitionStore.running" /></div>
     </Teleport>
-
-    <p v-if="answerPictureInPicture.error.value" class="floating-answer-error" role="alert">
-      {{ answerPictureInPicture.error.value }}
-    </p>
-
-    <div v-if="ocrPreparationVisible" class="ocr-preparation-backdrop">
-      <section
-        class="panel ocr-preparation-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="ocr-preparation-title"
-      >
-        <div class="ocr-preparation-heading">
-          <span class="ocr-preparation-icon" aria-hidden="true">OCR</span>
-          <div>
-            <h2 id="ocr-preparation-title">{{ ocrPreparationTitle }}</h2>
-            <p v-if="ocr.preparation.phase === 'missing'">
-              首次识别需要下载约 {{ formatMegabytes(ocr.preparation.totalBytes) }} 的本地组件，
-              下载后将保存在浏览器中，后续通常无需重复下载。
-            </p>
-            <p v-else-if="ocr.preparation.phase === 'error'" class="error-text">
-              {{ ocr.preparation.error }}
-            </p>
-            <p v-else>{{ ocr.preparation.currentAsset }}</p>
-          </div>
-        </div>
-
-        <div v-if="ocrPreparationBusy" class="ocr-preparation-progress" role="status" aria-live="polite">
-          <div class="ocr-progress-track">
-            <span :style="{ width: `${ocrPreparationPercent}%` }" />
-          </div>
-          <div class="ocr-progress-meta">
-            <span>{{ ocr.preparation.currentAsset }}</span>
-            <strong v-if="ocr.preparation.phase === 'downloading' || ocr.preparation.phase === 'loading-cache'">
-              {{ ocrPreparationPercent }}%
-            </strong>
-          </div>
-          <small v-if="ocr.preparation.phase === 'downloading'">
-            已准备 {{ formatMegabytes(ocr.preparation.loadedBytes) }} /
-            {{ formatMegabytes(ocr.preparation.totalBytes) }}
-          </small>
-        </div>
-
-        <div class="ocr-preparation-actions">
-          <button
-            v-if="ocr.preparation.phase === 'missing' && pendingCaptureAfterPreparation"
-            class="subtle-action"
-            type="button"
-            @click="cancelOCRPreparation"
-          >
-            暂不使用
-          </button>
-          <button
-            v-if="ocr.preparation.phase === 'missing' && pendingCaptureAfterPreparation"
-            class="primary-action"
-            type="button"
-            @click="confirmOCRPreparation"
-          >
-            下载并连接画面
-          </button>
-          <button
-            v-else-if="ocr.preparation.phase === 'error'"
-            class="primary-action"
-            type="button"
-            @click="confirmOCRPreparation"
-          >
-            重新尝试
-          </button>
-          <button
-            v-else-if="ocr.preparation.phase === 'ready'"
-            class="primary-action"
-            type="button"
-            @click="ocrPreparationVisible = false"
-          >
-            完成
-          </button>
-        </div>
-      </section>
-    </div>
+    <p v-if="answerPictureInPicture.error.value" class="floating-answer-error" role="alert">{{ answerPictureInPicture.error.value }}</p>
   </section>
 </template>

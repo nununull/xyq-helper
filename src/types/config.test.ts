@@ -1,86 +1,32 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 import { reactive } from 'vue'
+import { defaultAppConfig, hasValidCaptureRegions, mergeAppConfig } from './config'
 
-describe('应用配置迁移', () => {
-  it('新安装默认以每秒两帧持续捕获', async () => {
-    vi.stubGlobal('window', { devicePixelRatio: 2 })
-    const { defaultAppConfig } = await import('./config')
-
-    expect(defaultAppConfig.capture.captureFps).toBe(2)
+describe('175dt题干配置迁移', () => {
+  it('旧的完整答题框和双区域配置不会被当成175dt题干框', () => {
+    const migrated = mergeAppConfig({ capture: {
+      answerRegion: { x: 1, y: 2, width: 600, height: 400 },
+      questionRegion: { x: 1, y: 2, width: 300, height: 80 },
+      optionsRegion: { x: 1, y: 100, width: 300, height: 200 },
+      regionCoordinateSpace: 'video-pixel-v1',
+    } })
+    expect(hasValidCaptureRegions(migrated.capture)).toBe(false)
+    expect(migrated.capture.questionRegion).toBeNull()
+    expect(migrated.capture.optionsRegion).toBeNull()
+    expect(migrated.capture.answerRegion).toBeUndefined()
   })
 
-  it('旧配置缺少远程查询字段时补充默认值并使旧坐标失效', async () => {
-    vi.stubGlobal('window', { devicePixelRatio: 2 })
-    const { mergeAppConfig } = await import('./config')
-    const legacyConfig = {
-      capture: {
-        questionRegion: { x: 1, y: 2, width: 3, height: 4 },
-        optionsRegion: null,
-        devicePixelRatio: 3,
-        captureFps: 2,
-      },
-      ocr: { grayscale: false, binarize: false, threshold: 123, scale: 4 },
-      matcher: { topK: 9, minConfidence: 0.66 },
-      overlay: { opacity: 0.5, autoHideMs: 2_000, fontSize: 'extra-large' as const },
-    }
-
-    const merged = mergeAppConfig(legacyConfig)
-
-    expect(merged.remoteQuery).toEqual({ categoryId: '', requestTimeoutMs: 1_500 })
-    expect(merged.capture).toEqual({
-      ...legacyConfig.capture,
-      regionCoordinateSpace: null,
-    })
-    expect(merged.ocr).toEqual(legacyConfig.ocr)
-    expect(merged.matcher).toEqual(legacyConfig.matcher)
-    expect(merged.overlay).toEqual(legacyConfig.overlay)
-  })
-
-  it('只有视频像素坐标中的完整区域才视为有效校准', async () => {
-    vi.stubGlobal('window', { devicePixelRatio: 2 })
-    const { hasValidCaptureRegions, mergeAppConfig } = await import('./config')
-    const config = mergeAppConfig({
-      capture: {
-        questionRegion: { x: 1, y: 2, width: 300, height: 80 },
-        optionsRegion: { x: 1, y: 100, width: 300, height: 160 },
-        regionCoordinateSpace: 'video-pixel-v1',
-      },
-    })
-
-    expect(hasValidCaptureRegions(config.capture)).toBe(true)
-    expect(hasValidCaptureRegions({ ...config.capture, regionCoordinateSpace: null })).toBe(false)
-  })
-
-  it('响应式默认配置可合并为能安全克隆的独立普通配置', async () => {
-    vi.stubGlobal('window', { devicePixelRatio: 2 })
-    const { defaultAppConfig, mergeAppConfig } = await import('./config')
-    const reactiveConfig = reactive(defaultAppConfig)
-
-    const merged = mergeAppConfig(reactiveConfig)
-
+  it('响应式题干框和窗口尺寸保存为互不共享引用的普通数据', () => {
+    const source = reactive({ capture: {
+      questionRegion: { x: 1, y: 2, width: 300, height: 80 },
+      sourceSize: { width: 1024, height: 768 }, regionCoordinateSpace: '175dt-question-v1' as const,
+    } })
+    const merged = mergeAppConfig(source)
+    expect(hasValidCaptureRegions(merged.capture)).toBe(true)
     expect(() => structuredClone(merged)).not.toThrow()
-    expect(merged.capture).not.toBe(reactiveConfig.capture)
-    expect(merged.remoteQuery).not.toBe(reactiveConfig.remoteQuery)
-  })
-
-  it('响应式旧配置的捕获区域在合并后不共享嵌套引用', async () => {
-    vi.stubGlobal('window', { devicePixelRatio: 2 })
-    const { mergeAppConfig } = await import('./config')
-    const reactiveLegacyConfig = reactive({
-      capture: {
-        questionRegion: { x: 1, y: 2, width: 300, height: 80 },
-        optionsRegion: { x: 1, y: 100, width: 300, height: 160 },
-        devicePixelRatio: 2,
-        captureFps: 2,
-      },
-    })
-
-    const merged = mergeAppConfig(reactiveLegacyConfig)
-
-    expect(() => structuredClone(merged)).not.toThrow()
-    expect(merged.capture.questionRegion).not.toBe(reactiveLegacyConfig.capture.questionRegion)
-    expect(merged.capture.optionsRegion).not.toBe(reactiveLegacyConfig.capture.optionsRegion)
-    merged.capture.questionRegion!.x = 99
-    expect(reactiveLegacyConfig.capture.questionRegion.x).toBe(1)
+    expect(merged.capture.questionRegion).not.toBe(source.capture.questionRegion)
+    expect(merged.capture.sourceSize).not.toBe(source.capture.sourceSize)
+    expect(merged.remoteQuery.requestTimeoutMs).toBe(15000)
+    expect(defaultAppConfig.capture.captureFps).toBe(4)
   })
 })

@@ -1,28 +1,12 @@
 import { mergeAppConfig, type AppConfig, type PartialAppConfig } from '../../types/config'
 import type { CaptureRegion } from '../../types/capture'
 
-/** 将共享预览中完成的两个区域写入独立的应用配置。 */
-export function applyCaptureRegions(
-  config: PartialAppConfig,
-  questionRegion: CaptureRegion,
-  optionsRegion: CaptureRegion,
-): AppConfig {
+/** 保存唯一的175dt题干选框，选项和完整窗口不再参与识别。 */
+export function applyQuestionRegion(config: PartialAppConfig, questionRegion: CaptureRegion, sourceSize: { width: number; height: number }): AppConfig {
   const next = mergeAppConfig(config)
   next.capture.questionRegion = { ...questionRegion }
-  next.capture.optionsRegion = { ...optionsRegion }
-  next.capture.regionCoordinateSpace = 'video-pixel-v1'
-  return next
-}
-
-/** 将一次框选的完整答题区域写入配置，并停用旧版双区域坐标。 */
-export function applyAnswerRegion(
-  config: PartialAppConfig,
-  answerRegion: CaptureRegion,
-): AppConfig {
-  const next = mergeAppConfig(config)
-  next.capture.answerRegion = { ...answerRegion }
-  next.capture.questionRegion = null
+  next.capture.sourceSize = { ...sourceSize }
   next.capture.optionsRegion = null
-  next.capture.regionCoordinateSpace = 'video-pixel-v1'
+  next.capture.regionCoordinateSpace = '175dt-question-v1'
   return next
 }

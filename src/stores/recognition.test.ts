@@ -2,31 +2,18 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { useRecognitionStore } from './recognition'
 
-describe('识别缓存代次', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia())
-  })
+beforeEach(() => setActivePinia(createPinia()))
 
-  it('缓存清理后递增共享代次并清除已完成题语义', () => {
+describe('175dt结果唯一来源', () => {
+  it('原样保留候选顺序，换题清空全部答案和耗时', () => {
     const store = useRecognitionStore()
-    store.lastCompletedFingerprint = 'old'
-    store.lastCompletedQuestion = '旧题干'
-    store.resultSource = 'cache'
-    store.durationMs = 18
-    store.phase = 'showingAnswer'
-    store.message = '已从本地缓存找到答案'
-
-    store.invalidateRemoteCache()
-
-    expect(store.cacheGeneration).toBe(1)
-    expect(store.lastCompletedFingerprint).toBeNull()
-    expect(store.lastCompletedQuestion).toBeNull()
-    expect(store.resultSource).toBeNull()
+    store.publishResult([{ question: '题目', answerText: '答案', source: '175dt' }], 1000)
+    store.recordRequest()
+    expect(store.candidates[0]?.answerText).toBe('答案')
+    expect(store.requestCount).toBe(1)
+    store.clearResult()
+    expect(store.candidates).toEqual([])
     expect(store.durationMs).toBeNull()
-    expect(store.phase).toBe('idle')
-    expect(store.message).toBe('')
-
-    store.reset()
-    expect(store.cacheGeneration).toBe(1)
+    expect(store.requestCount).toBe(1)
   })
 })

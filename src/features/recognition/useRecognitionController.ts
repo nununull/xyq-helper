@@ -1,970 +1,206 @@
-import { useOCR } from '../../composables/useOCR'
-import {
-  getRemoteQuestionCache,
-  putRemoteQuestionCache,
-} from '../../composables/useLocalStorageDB'
 import { useScreenCapture } from '../../composables/useScreenCapture'
 import { useCaptureStore } from '../../stores/capture'
 import { useConfigStore } from '../../stores/config'
-import { useDBStore } from '../../stores/db'
-import { useMatcherStore } from '../../stores/matcher'
-import { useOCRStore } from '../../stores/ocr'
 import { useRecognitionStore } from '../../stores/recognition'
 import type { CaptureFrame } from '../../types/capture'
-import { normalizeCaptureFps } from '../../types/config'
-import type { MatchResult } from '../../types/match'
-import type { OCRResult } from '../../types/ocr'
-import type { ParsedQuestion } from '../../types/question'
-import type {
-  RecognitionPhase,
-  RemoteQueryOptions,
-  RemoteQueryResult,
-  RemoteQuestionCandidate,
-  RemoteQuestionCache,
-} from '../../types/remoteQuestion'
-import { diceSimilarity, normalizeQuestionText } from '../../utils/normalizeText'
-import { parseQuestion } from '../../utils/parseQuestion'
-import { findLikelyQuestionText, matchQuestion } from '../../utils/matcher'
-import {
-  cleanRemoteQueryText,
-  createProgressiveRemoteQueries,
-  createQuestionFingerprint,
-  findSimilarQuestionEntry,
-  type SimilarQuestionEntry,
-} from '../remote-query/queryText'
-import {
-  inferRemoteAnswer,
-  rankRemoteCandidates,
-  type RemoteMatchDecision,
-} from '../remote-query/remoteCandidateMatcher'
-import { queryRemoteQuestions } from '../remote-query/remoteQuestionClient'
-import { persistRemoteQuestionsInWorker } from '../remote-query/remoteQuestionPersistence'
-import { createQuestionStabilizer } from './questionStabilizer'
-import { createRecognitionRuntimeAdapters } from './recognitionRuntimeAdapters'
+import type { RecognitionPhase, RemoteQueryOptions, RemoteQueryResult, RemoteQuestionCandidate } from '../../types/remoteQuestion'
+import { encodeQuestionScreenshot, queryRemoteScreenshot } from '../remote-query/remoteScreenshotClient'
+import { createFrameMonitor } from './frameMonitor'
+import { CAPTURE_INTERVAL_MS, MIN_QUERY_INTERVAL_MS, RATE_LIMIT_COOLDOWN_MS } from '../../../shared/recognition-policy.mjs'
 
-const POLL_INTERVAL_MS = 120
-const QUESTION_FAILURE_COOLDOWN_MS = 10_000
-const CATEGORY_RATE_LIMIT_COOLDOWN_MS = 60_000
-const MAXIMUM_REMOTE_QUERY_COUNT = 6
-const REMOTE_QUERY_CONCURRENCY = 3
-const REMOTE_QUERY_BUDGET_MS = 4_500
-const SAME_QUESTION_SIMILARITY = 0.95
-const MAXIMUM_REMOTE_RESULT_CACHE_SIZE = 200
-
-interface RecognitionStorePort {
-  readonly cacheGeneration: number
-  readonly lastCompletedFingerprint: string | null
-  readonly lastCompletedQuestion: string | null
-  /** 同步识别阶段及其用户提示。 */
+interface RecognitionPresentation {
+  /** 设置阶段和用户提示。 */
   setPhase(phase: RecognitionPhase, message: string): void
-  /** 同步连续识别是否运行。 */
+  /** 设置画面监测开关。 */
   setRunning(running: boolean): void
-  /** 记录最近完成的题目指纹。 */
-  setLastCompletedFingerprint(fingerprint: string | null): void
-  /** 记录最近完成的标准化题干。 */
-  setLastCompletedQuestion(question: string | null): void
-  /** 记录本次答案来源与求解耗时。 */
-  setOutcome(resultSource: 'local' | 'cache' | 'remote', durationMs: number): void
-}
-
-interface MatcherStorePort {
-  /** 发布或清空当前匹配结果。 */
-  setResult(result: MatchResult | null): void
-  /** 允许旧适配器继续提供候选接收能力，自动识别流程不再调用。 */
-  setRemoteCandidates?(candidates: Array<{
-    question: string
-    answerText: string
-    confidence: number
-  }>): void
-  /** 发布按相似度排序的远程匹配结果，用于只读展示。 */
-  setRemoteMatches?(matches: Array<{
-    question: string
-    answerText: string
-    confidence: number
-  }>): void
-  /** 发布或清空当前匹配错误。 */
-  setError(error: string): void
-  /** 清空当前匹配上下文。 */
-  clear(): void
-}
-
-interface OCRPresentationPort {
-  /** 发布当前代次已经开始 OCR。 */
-  publishStarted(): void
-  /** 发布当前代次的 OCR 成功结果。 */
-  publishResult(result: OCRResult): void
-  /** 发布当前代次的 OCR 失败消息。 */
-  publishError(error: string): void
-}
-
-interface SolveContext {
-  generation: number
-  cacheGeneration: number
-  requestController: AbortController
-  fingerprint: string
-  categoryId: string
-  normalizedQuestion: string
-}
-
-interface StableQuestionSnapshot {
-  parsed: ParsedQuestion
-  ocrConfidence: number
-  frameHash: string
-}
-
-interface ActiveCooldownState {
-  question: boolean
-  category: boolean
+  /** 发布175dt候选结果。 */
+  publishResult(candidates: RemoteQuestionCandidate[], durationMs: number): void
+  /** 撤下旧题答案。 */
+  clearResult(): void
+  /** 累计真实网络查询次数。 */
+  recordRequest(): void
 }
 
 export interface RecognitionControllerDependencies {
-  /** 捕获当前配置区域的一帧图像。 */
+  /** 从共享窗口裁出当前题干，同时更新本地预览。 */
   captureFrame(): CaptureFrame | null | Promise<CaptureFrame | null>
-  /** 串行识别一帧中的题干和选项。 */
-  recognizeFrame(frame: CaptureFrame): Promise<OCRResult>
-  /** 查询指定活动分类的远程题库。 */
-  query(categoryId: string, queryText: string, options: RemoteQueryOptions): Promise<RemoteQueryResult>
-  /** 使用已加载的内置题库匹配当前题目。 */
-  searchLocal(parsed: ParsedQuestion): MatchResult | null
-  /** 使用内置题库纠正远程检索所需的 OCR 题干。 */
-  correctRemoteQuery?(parsed: ParsedQuestion): string | null
-  /** 等待下一次轮询间隔。 */
-  sleep(durationMs: number): Promise<void>
-  /** 读取连续抽帧的目标间隔；省略时使用控制器默认值。 */
-  getCaptureIntervalMs?(): number
-  /** 按分类和题目指纹读取缓存。 */
-  readCache(categoryId: string, fingerprint: string): Promise<RemoteQuestionCache | undefined>
-  /** 持久化新增或更新后的缓存。 */
-  writeCache(record: RemoteQuestionCache): Promise<void>
-  /** 将远程接口返回的完整题目直接沉淀到本地题库。 */
-  persistRemoteQuestions?(categoryId: string, candidates: RemoteQuestionCandidate[]): Promise<number>
-  /** 读取当前活动分类。 */
+  /** 将题干截图交给175dt，禁止本地OCR和本地题库回退。 */
+  queryScreenshot(categoryId: string, frame: CaptureFrame, options: RemoteQueryOptions): Promise<RemoteQueryResult>
+  /** 获取当前活动分类。 */
   getCategoryId(): string
-  /** 读取当前远程请求超时。 */
+  /** 获取整条识别请求的超时。 */
   getRequestTimeoutMs(): number
-  /** 读取当前时钟，用于缓存统计与冷却判断。 */
+  /** 获取单调时钟。 */
   now(): number
-  ocrPresentation: OCRPresentationPort
-  recognitionStore: RecognitionStorePort
-  matcherStore: MatcherStorePort
+  /** 等待下一次纯本地抽帧。 */
+  sleep(durationMs: number): Promise<void>
+  recognitionStore: RecognitionPresentation
 }
 
 export interface RecognitionController {
-  /** 启动连续识别。 */
+  /** 启动每秒四次的本地题干监测。 */
   start(): void
-  /** 停止连续识别并废弃在途结果。 */
+  /** 停止监测、取消上传并撤下答案。 */
   stop(): void
-  /** 绕过当前题目冷却并立即重试。 */
+  /** 重新等待当前题干稳定，仍遵守请求间隔和限流冷却。 */
   retry(): Promise<void>
-  /** 为新的活动分类重置识别上下文。 */
+  /** 切换分类后丢弃旧识别上下文。 */
   resetForCategory(): void
 }
 
-/** 创建依赖可替换的串行连续识别控制器。 */
-export function createRecognitionController(
-  dependencies: RecognitionControllerDependencies,
-): RecognitionController {
-  const {
-    captureFrame,
-    recognizeFrame,
-    searchLocal,
-    correctRemoteQuery,
-    query,
-    sleep,
-    getCaptureIntervalMs,
-    readCache,
-    writeCache,
-    persistRemoteQuestions,
-    getCategoryId,
-    getRequestTimeoutMs,
-    now,
-    ocrPresentation,
-    recognitionStore,
-    matcherStore,
-  } = dependencies
-  const stabilizer = createQuestionStabilizer(0.78, 3)
-  const questionFailureCooldowns = new Map<string, number>()
-  const categoryRateLimitCooldowns = new Map<string, number>()
-  const remoteResultCache = new Map<
-    string,
-    Extract<RemoteQueryResult, { kind: 'success' | 'empty' }>
-  >()
-
+/** 只在题干稳定后上传一次，画面变化立即取消旧题且拒绝迟到结果。 */
+export function createRecognitionController(dependencies: RecognitionControllerDependencies): RecognitionController {
+  const { recognitionStore: presentation, now, sleep } = dependencies
+  const monitor = createFrameMonitor()
   let running = false
-  let loopPromise: Promise<void> | null = null
-  let detectionTail: Promise<void> = Promise.resolve()
-  let remotePersistenceTail: Promise<void> = Promise.resolve()
-  let lifecycleGeneration = 0
-  let activeSolveGeneration = 0
-  let observedCacheGeneration = recognitionStore.cacheGeneration
-  let activeRequestController: AbortController | null = null
-  let lastStableFrameHash: string | null = null
-  let lastStableQuestion: string | null = null
-  let lastStableSnapshot: StableQuestionSnapshot | null = null
-  let snapshotRetryPending = false
-  let activeFingerprint: string | null = null
-  let activeSolveContext: SolveContext | null = null
-  let lastCompletedCache: SimilarQuestionEntry<RemoteQuestionCache> | null = null
-  const solveContexts = new WeakMap<ParsedQuestion, SolveContext>()
+  let lifecycle = 0
+  let scene = 0
+  let queried = false
+  let nextQueryAt = 0
+  let request: AbortController | null = null
+  let detectionTail = Promise.resolve()
 
-  /** 生成与远端实际请求参数一致的缓存键。 */
-  function createRemoteQueryKey(categoryId: string, queryText: string): string {
-    return `${categoryId}\u0000${normalizeQuestionText(cleanRemoteQueryText(queryText))}`
+  /** 取消当前题目请求，并使所有迟到回调失去发布资格。 */
+  function invalidateScene(): void {
+    scene += 1
+    request?.abort()
+    request = null
+    presentation.clearResult()
   }
 
-  /** 查询一次远端关键词，并复用本次运行期间已经取得的相同结果。 */
-  async function queryRemoteOnce(
-    categoryId: string,
-    queryText: string,
-    options: RemoteQueryOptions,
-  ): Promise<RemoteQueryResult> {
-    const cleanedQuery = cleanRemoteQueryText(queryText)
-    const cacheKey = createRemoteQueryKey(categoryId, cleanedQuery)
-    const cached = remoteResultCache.get(cacheKey)
-    if (cached) return cached
-
-    const result = await query(categoryId, cleanedQuery, options)
-    if (result.kind === 'success' || result.kind === 'empty') {
-      remoteResultCache.set(cacheKey, result)
-      if (remoteResultCache.size > MAXIMUM_REMOTE_RESULT_CACHE_SIZE) {
-        const oldestKey = remoteResultCache.keys().next().value
-        if (oldestKey) remoteResultCache.delete(oldestKey)
-      }
+  /** 发出一张稳定题图，成功、空结果和失败都只自动尝试一次。 */
+  async function solve(frame: CaptureFrame, generation: number): Promise<void> {
+    const ownScene = scene
+    const categoryId = dependencies.getCategoryId()
+    const controller = new AbortController()
+    request = controller
+    queried = true
+    const startedAt = now()
+    nextQueryAt = Math.max(nextQueryAt, startedAt + MIN_QUERY_INTERVAL_MS)
+    presentation.recordRequest()
+    presentation.setPhase('primaryQuery', '正在通过175dt识别题干')
+    /** 只有当前运行代次、画面和分类仍然一致时才能发布结果。 */
+    function isCurrent(): boolean {
+      return running && lifecycle === generation && scene === ownScene && !controller.signal.aborted && categoryId === dependencies.getCategoryId()
     }
-    return result
-  }
-
-  /** 将远程题目追加到后台串行入库队列，不阻塞当前查询和答案匹配。 */
-  function enqueueRemotePersistence(
-    categoryId: string,
-    candidates: RemoteQuestionCandidate[],
-  ): void {
-    if (!persistRemoteQuestions || candidates.length === 0) return
-    remotePersistenceTail = remotePersistenceTail
-      .catch(() => undefined)
-      .then(async () => {
-        await persistRemoteQuestions(categoryId, candidates)
+    try {
+      const result = await dependencies.queryScreenshot(categoryId, frame, {
+        signal: controller.signal, timeoutMs: dependencies.getRequestTimeoutMs(),
       })
-      .catch(() => undefined)
-  }
-
-  /** 判断异步结果是否仍属于当前识别代次。 */
-  function canPublish(context: SolveContext): boolean {
-    return context.generation === activeSolveGeneration
-      && context.cacheGeneration === recognitionStore.cacheGeneration
-      && context.requestController === activeRequestController
-      && !context.requestController.signal.aborted
-  }
-
-  /** 中止当前求解并递增求解代次，使迟到结果无法发布。 */
-  function invalidateActiveSolve(): void {
-    activeSolveGeneration += 1
-    activeRequestController?.abort()
-    activeRequestController = null
-    activeSolveContext = null
-  }
-
-  /** 清除帧稳定器和当前题目上下文，下一帧必须重新稳定。 */
-  function clearCurrentQuestionContext(): void {
-    stabilizer.reset()
-    lastStableFrameHash = null
-    lastStableQuestion = null
-    lastStableSnapshot = null
-    snapshotRetryPending = false
-    activeFingerprint = null
-  }
-
-  /** 同步共享缓存代次；变化时废弃旧 solve 与所有内存快照。 */
-  function synchronizeCacheGeneration(): boolean {
-    if (observedCacheGeneration === recognitionStore.cacheGeneration) return false
-    observedCacheGeneration = recognitionStore.cacheGeneration
-    invalidateActiveSolve()
-    remoteResultCache.clear()
-    lastCompletedCache = null
-    lastStableFrameHash = null
-    lastStableQuestion = null
-    lastStableSnapshot = null
-    snapshotRetryPending = false
-    activeFingerprint = null
-    matcherStore.clear()
-    return true
-  }
-
-  /** 将当前 OCR 结果保留为待下一帧确认的新题并立即废弃旧求解。 */
-  function beginPendingQuestion(): void {
-    lastStableFrameHash = null
-    lastStableQuestion = null
-    lastStableSnapshot = null
-    snapshotRetryPending = false
-    invalidateActiveSolve()
-    activeFingerprint = null
-    matcherStore.clear()
-  }
-
-  /** 判断有效 OCR 题干是否仍属于当前题目，吸收少量字符抖动。 */
-  function isCurrentQuestion(normalizedQuestion: string): boolean {
-    if (!lastStableQuestion) return false
-    return diceSimilarity(normalizedQuestion, lastStableQuestion) >= SAME_QUESTION_SIMILARITY
-  }
-
-  /** 清理过期记录后，查找与当前题干足够相似的有效失败冷却。 */
-  function findActiveFailureCooldown(
-    normalizedQuestion: string,
-    currentTime = now(),
-  ): SimilarQuestionEntry<number> | null {
-    for (const [question, expiresAt] of questionFailureCooldowns) {
-      if (expiresAt <= currentTime) questionFailureCooldowns.delete(question)
-    }
-    return findSimilarQuestionEntry(
-      normalizedQuestion,
-      Array.from(questionFailureCooldowns, ([question, value]) => ({
-        normalizedQuestion: question,
-        value,
-      })),
-    )
-  }
-
-  /** 同时读取题目与分类冷却，避免较短冷却掩盖较长冷却。 */
-  function getActiveCooldownState(
-    normalizedQuestion: string,
-    categoryId: string,
-  ): ActiveCooldownState {
-    const currentTime = now()
-    return {
-      question: Boolean(findActiveFailureCooldown(normalizedQuestion, currentTime)),
-      category: (categoryRateLimitCooldowns.get(categoryId) ?? 0) > currentTime,
-    }
-  }
-
-  /** 以固定文案发布等待重试状态，并登记对应冷却时间。 */
-  function publishFailure(
-    result: Exclude<RemoteQueryResult, { kind: 'success' | 'empty' }>,
-  ): void {
-    const context = activeSolveContext
-    if (!context || !canPublish(context)) return
-
-    const messages = {
-      corsBlocked: '可能是 CORS 或网络错误',
-      timeout: '远程题库响应超时',
-      rateLimited: '接口暂时拒绝请求',
-      malformedResponse: '远程接口格式发生变化',
-    } as const
-    const message = result.kind === 'remoteError'
-      ? result.message || '远程请求失败'
-      : messages[result.kind]
-
-    if (result.kind === 'rateLimited') {
-      categoryRateLimitCooldowns.set(context.categoryId, now() + CATEGORY_RATE_LIMIT_COOLDOWN_MS)
-    } else {
-      questionFailureCooldowns.set(
-        context.normalizedQuestion,
-        now() + QUESTION_FAILURE_COOLDOWN_MS,
-      )
-    }
-    snapshotRetryPending = true
-    matcherStore.setError(message)
-    recognitionStore.setPhase('waitingRetry', message)
-  }
-
-  /** 发布缓存答案，并使用本次选项重新推导答案字母。 */
-  async function publishCachedResult(
-    cached: RemoteQuestionCache,
-    parsed: ParsedQuestion,
-    startedAt: number,
-  ): Promise<void> {
-    const context = solveContexts.get(parsed)
-    if (!context || !canPublish(context)) return
-    const inferred = inferRemoteAnswer(cached.answerText, parsed.options)
-    const updated = {
-      ...cached,
-      lastUsedAt: now(),
-      hitCount: cached.hitCount + 1,
-    }
-    await writeCache(updated)
-    if (!canPublish(context)) return
-
-    const durationMs = Math.max(0, Math.round(performance.now() - startedAt))
-    matcherStore.setResult({
-      questionId: cached.id,
-      answer: inferred.answer,
-      answerText: cached.answerText,
-      confidence: cached.matchConfidence,
-      matchedQuestion: cached.matchedQuestion,
-      source: cached.source,
-      resultSource: 'cache',
-      durationMs,
-      candidates: [],
-    })
-    recognitionStore.setOutcome('cache', durationMs)
-    recognitionStore.setLastCompletedFingerprint(cached.questionFingerprint)
-    recognitionStore.setLastCompletedQuestion(parsed.normalizedQuestion)
-    lastCompletedCache = {
-      normalizedQuestion: parsed.normalizedQuestion,
-      value: updated,
-    }
-    snapshotRetryPending = false
-    recognitionStore.setPhase('showingAnswer', '已从本地缓存找到答案')
-  }
-
-  /** 发布本地题库答案并写入统一缓存，后续相同题目无需重复匹配。 */
-  async function publishLocalResult(
-    result: MatchResult,
-    parsed: ParsedQuestion,
-    startedAt: number,
-  ): Promise<void> {
-    const context = solveContexts.get(parsed)
-    if (!context || !canPublish(context)) return
-    const answerText = result.answerText ?? (result.answer ? parsed.options[result.answer] : undefined)
-    if (!answerText) return
-
-    const cachedAt = now()
-    const cacheRecord: RemoteQuestionCache = {
-      id: `${context.categoryId}:${context.fingerprint}`,
-      categoryId: context.categoryId,
-      questionFingerprint: context.fingerprint,
-      recognizedQuestion: parsed.questionText,
-      matchedQuestion: result.matchedQuestion,
-      answerText,
-      source: result.source,
-      matchConfidence: result.confidence,
-      createdAt: cachedAt,
-      lastUsedAt: cachedAt,
-      hitCount: 1,
-    }
-    await writeCache(cacheRecord)
-    if (!canPublish(context)) return
-
-    const durationMs = Math.max(0, Math.round(performance.now() - startedAt))
-    matcherStore.setResult({ ...result, resultSource: 'local', durationMs })
-    recognitionStore.setOutcome('local', durationMs)
-    recognitionStore.setLastCompletedFingerprint(context.fingerprint)
-    recognitionStore.setLastCompletedQuestion(parsed.normalizedQuestion)
-    lastCompletedCache = {
-      normalizedQuestion: parsed.normalizedQuestion,
-      value: cacheRecord,
-    }
-    snapshotRetryPending = false
-    recognitionStore.setPhase('showingAnswer', '已从网易官方本地题库找到答案')
-  }
-
-  /** 发布候选决策；仅 confident 和 lowConfidence 写入成功缓存。 */
-  async function publishDecision(
-    decision: RemoteMatchDecision,
-    categoryId: string,
-    fingerprint: string,
-    parsed: ParsedQuestion,
-    startedAt: number,
-  ): Promise<void> {
-    const context = solveContexts.get(parsed)
-    if (!context || !canPublish(context)) return
-    if (decision.kind === 'rejected' || !decision.best) {
-      questionFailureCooldowns.set(
-        parsed.normalizedQuestion,
-        now() + QUESTION_FAILURE_COOLDOWN_MS,
-      )
-      snapshotRetryPending = true
-      const message = '当前题目未查询到'
-      matcherStore.setError(message)
-      recognitionStore.setPhase('waitingRetry', message)
-      return
-    }
-    const best = decision.best
-    const cachedAt = now()
-    const cacheRecord: RemoteQuestionCache = {
-      id: `${categoryId}:${fingerprint}`,
-      categoryId,
-      questionFingerprint: fingerprint,
-      recognizedQuestion: parsed.questionText,
-      matchedQuestion: best.question,
-      answerText: best.answerText,
-      source: best.source,
-      matchConfidence: best.confidence,
-      createdAt: cachedAt,
-      lastUsedAt: cachedAt,
-      hitCount: 1,
-    }
-    const shouldPersist = decision.kind === 'confident' && best.answer !== null
-    if (shouldPersist) {
-      await writeCache(cacheRecord)
-      if (!canPublish(context)) return
-    }
-
-    const durationMs = Math.max(0, Math.round(performance.now() - startedAt))
-    const warning = decision.kind === 'ambiguous'
-      ? '存在多道相似题，已自动显示最相似答案'
-      : decision.kind === 'lowConfidence'
-        ? '匹配置信度较低，请核对答案'
-        : undefined
-    matcherStore.setResult({
-      questionId: cacheRecord.id,
-      answer: best.answer,
-      answerText: best.answerText,
-      confidence: best.confidence,
-      matchedQuestion: best.question,
-      source: best.source,
-      resultSource: 'remote',
-      durationMs,
-      warning,
-      candidates: [],
-    })
-    recognitionStore.setOutcome('remote', durationMs)
-    recognitionStore.setLastCompletedFingerprint(fingerprint)
-    recognitionStore.setLastCompletedQuestion(parsed.normalizedQuestion)
-    lastCompletedCache = shouldPersist
-      ? {
-          normalizedQuestion: parsed.normalizedQuestion,
-          value: cacheRecord,
-        }
-      : null
-    snapshotRetryPending = false
-    recognitionStore.setPhase('showingAnswer', warning ?? '已找到远程答案')
-  }
-
-  /** 为当前缓存代次中已经稳定的题目执行缓存、远程查询、排序和结果发布。 */
-  async function solveStableQuestion(
-    parsed: ParsedQuestion,
-    ocrConfidence: number,
-    expectedCacheGeneration: number,
-  ): Promise<void> {
-    synchronizeCacheGeneration()
-    if (expectedCacheGeneration !== recognitionStore.cacheGeneration) return
-
-    const startedAt = performance.now()
-    const categoryId = getCategoryId()
-    const fingerprint = createQuestionFingerprint(parsed.normalizedQuestion)
-    if (!categoryId) {
-      const message = '请先选择活动分类'
-      matcherStore.setError(message)
-      recognitionStore.setPhase('waitingRetry', message)
-      return
-    }
-
-    activeRequestController?.abort()
-    const requestController = new AbortController()
-    const context: SolveContext = {
-      generation: ++activeSolveGeneration,
-      cacheGeneration: expectedCacheGeneration,
-      requestController,
-      fingerprint,
-      categoryId,
-      normalizedQuestion: parsed.normalizedQuestion,
-    }
-    activeRequestController = requestController
-    activeSolveContext = context
-    activeFingerprint = fingerprint
-    solveContexts.set(parsed, context)
-
-    try {
-      recognitionStore.setPhase('cacheLookup', '正在查询本地缓存')
-      const cached = await readCache(categoryId, fingerprint)
-      if (!canPublish(context)) return
-      if (cached) {
-        await publishCachedResult(cached, parsed, startedAt)
-        return
+      if (!isCurrent()) return
+      if (result.kind === 'success') {
+        presentation.publishResult(result.candidates, Math.round(now() - startedAt))
+        presentation.setPhase('showingAnswer', '175dt已返回答案，等待下一题')
+      } else {
+        if (result.kind === 'rateLimited') nextQueryAt = Math.max(nextQueryAt, now() + RATE_LIMIT_COOLDOWN_MS)
+        presentation.setPhase('waitingRetry', result.kind === 'empty' ? '175dt未找到对应题目，请检查分类或选框后手动重试' : result.message)
       }
-      const completed = findSimilarQuestionEntry(
-        parsed.normalizedQuestion,
-        lastCompletedCache ? [lastCompletedCache] : [],
-      )
-      if (completed) {
-        await publishCachedResult(completed.value, parsed, startedAt)
-        return
-      }
-      if (fingerprint === recognitionStore.lastCompletedFingerprint) return
-
-      recognitionStore.setPhase('localLookup', '正在查询网易官方本地题库')
-      const localResult = searchLocal(parsed)
-      if (localResult) {
-        await publishLocalResult(localResult, parsed, startedAt)
-        return
-      }
-
-      const correctedQuestion = correctRemoteQuery?.(parsed)
-      const recognizedQueries = await createProgressiveRemoteQueries(parsed.questionText)
-      const correctedQueries = correctedQuestion
-        ? await createProgressiveRemoteQueries(correctedQuestion)
-        : []
-      const queryTerms = [
-        ...recognizedQueries.slice(0, 2),
-        ...correctedQueries.slice(0, 2),
-        ...recognizedQueries.slice(2),
-        ...correctedQueries.slice(2),
-      ]
-        .filter((queryText, index, all) => (
-          all.findIndex((current) => (
-            createRemoteQueryKey(categoryId, current) === createRemoteQueryKey(categoryId, queryText)
-          )) === index
-        ))
-        .slice(0, MAXIMUM_REMOTE_QUERY_COUNT)
-      let decision: RemoteMatchDecision = rankRemoteCandidates(parsed, [], ocrConfidence)
-      const accumulatedCandidates = new Map<string, RemoteQuestionCandidate>()
-      const remoteQueryStartedAt = now()
-      let queryFailure: Exclude<RemoteQueryResult, { kind: 'success' | 'empty' }> | null = null
-      let cancelPendingQueriesAfterPublish = false
-
-      queryBatches: for (let batchStart = 0; batchStart < queryTerms.length; batchStart += REMOTE_QUERY_CONCURRENCY) {
-        if (batchStart > 0 && now() - remoteQueryStartedAt >= REMOTE_QUERY_BUDGET_MS) break
-        const batchTerms = queryTerms.slice(batchStart, batchStart + REMOTE_QUERY_CONCURRENCY)
-        const phase = batchStart === 0 ? 'primaryQuery' : 'fallbackQuery'
-        recognitionStore.setPhase(
-          phase,
-          `正在并行查询 ${batchStart + 1}-${batchStart + batchTerms.length}/${queryTerms.length}：${batchTerms.join('、')}`,
-        )
-        const pendingQueries = new Map(batchTerms.map((queryText, order) => [
-          order,
-          queryRemoteOnce(categoryId, queryText, {
-            signal: requestController.signal,
-            timeoutMs: getRequestTimeoutMs(),
-          }).then((result) => ({ order, result })),
-        ]))
-
-        // 任一并行请求返回后立即参与匹配，不等待同批最慢请求超时。
-        while (pendingQueries.size > 0) {
-          const { order, result } = await Promise.race(pendingQueries.values())
-          pendingQueries.delete(order)
-          if (!canPublish(context)) return
-          if (result.kind !== 'success' && result.kind !== 'empty') {
-            queryFailure ??= result
-            continue
-          }
-          if (result.kind === 'empty') continue
-
-          enqueueRemotePersistence(categoryId, result.candidates)
-          for (const candidate of result.candidates) {
-            const key = `${candidate.question}\u0000${candidate.answerText}`
-            accumulatedCandidates.set(key, candidate)
-          }
-
-          decision = rankRemoteCandidates(parsed, [...accumulatedCandidates.values()], ocrConfidence)
-          matcherStore.setRemoteMatches?.(decision.candidates.slice(0, 5).map((candidate) => ({
-            question: candidate.question,
-            answerText: candidate.answerText,
-            confidence: candidate.confidence,
-          })))
-          const runnerUp = decision.candidates[1]
-          const hasDecisiveLead = !runnerUp
-            || (decision.best?.confidence ?? 0) - runnerUp.confidence >= 0.08
-          if (decision.kind === 'confident' && decision.best?.answer && hasDecisiveLead) {
-            cancelPendingQueriesAfterPublish = pendingQueries.size > 0
-            break queryBatches
-          }
-        }
-      }
-
-      // 并行分支允许部分失败；只在所有分支都没有候选时发布网络错误。
-      if (accumulatedCandidates.size === 0 && queryFailure) {
-        publishFailure(queryFailure)
-        return
-      }
-
-      recognitionStore.setPhase('matching', '正在匹配候选题')
-      await publishDecision(decision, categoryId, fingerprint, parsed, startedAt)
-      if (cancelPendingQueriesAfterPublish) requestController.abort()
-      return
     } catch (error) {
-      if (canPublish(context)) {
-        questionFailureCooldowns.set(
-          parsed.normalizedQuestion,
-          now() + QUESTION_FAILURE_COOLDOWN_MS,
-        )
-        snapshotRetryPending = true
-        const message = error instanceof Error ? error.message : '连续识别发生异常'
-        matcherStore.setError(message)
-        recognitionStore.setPhase('waitingRetry', message)
-      }
+      if (isCurrent()) presentation.setPhase('waitingRetry', error instanceof Error ? error.message : '截图识别失败，请手动重试')
     } finally {
-      if (context.generation === activeSolveGeneration
-        && activeRequestController === requestController) {
-        activeRequestController = null
-        activeSolveContext = null
-      }
+      if (request === controller) request = null
     }
   }
 
-  /** 捕获并串行处理一帧，所有异步边界均校验识别代次。 */
-  async function processFrame(scheduledGeneration: number): Promise<void> {
-    if (scheduledGeneration !== lifecycleGeneration) return
-    synchronizeCacheGeneration()
-    const captured = await captureFrame()
-    const cacheChangedDuringCapture = synchronizeCacheGeneration()
-    if (scheduledGeneration !== lifecycleGeneration || cacheChangedDuringCapture || !captured) return
-    if (captured.frameHash === lastStableFrameHash) {
-      resumeStableSnapshotIfReady()
+  /** 捕获与检测都在本地完成，网络请求不阻塞后续换题监测。 */
+  async function detect(generation: number): Promise<void> {
+    if (!running || lifecycle !== generation) return
+    const frame = await dependencies.captureFrame()
+    if (!running || lifecycle !== generation || !frame) return
+    const state = monitor.observe(frame.questionImage, now())
+    if (state.changed) {
+      invalidateScene()
+      queried = false
+    }
+    if (state.blank) {
+      presentation.setPhase('capturing', '选框内暂无题目，正在本地等待')
       return
     }
-    // 查询期间仍继续 OCR；确认换题后立即取消旧查询，避免等待整批远程请求结束。
-    matcherStore.setError('')
-    recognitionStore.setPhase('capturing', '正在处理新的题目画面')
-    recognitionStore.setPhase('recognizing', '正在识别题目文字')
-    ocrPresentation.publishStarted()
-    let recognized: OCRResult
-    try {
-      recognized = await recognizeFrame(captured)
-    } catch (error) {
-      const cacheChangedDuringRecognition = synchronizeCacheGeneration()
-      if (scheduledGeneration !== lifecycleGeneration || cacheChangedDuringRecognition) return
-      ocrPresentation.publishError(error instanceof Error ? error.message : 'OCR 识别失败')
-      throw error
-    }
-    const cacheChangedDuringRecognition = synchronizeCacheGeneration()
-    if (scheduledGeneration !== lifecycleGeneration || cacheChangedDuringRecognition) {
+    if (!state.stable) {
+      presentation.setPhase('stabilizing', '题干变化中，等待画面稳定')
       return
     }
-    ocrPresentation.publishResult(recognized)
-
-    recognitionStore.setPhase('stabilizing', '正在确认题目稳定性')
-    const parsed = parseQuestion(recognized)
-    const stability = stabilizer.push(parsed)
-    const canUseCurrentFrame = parsed.normalizedQuestion.length >= 4
-      && Object.values(parsed.options).filter(Boolean).length >= 2
-    if (stability.kind !== 'stable' && stability.kind !== 'forcedStable' && !canUseCurrentFrame) {
-      // 单帧漏字或空结果不能证明已经换题，保留仍与画面对应的现有答案。
-      if (!lastStableQuestion) beginPendingQuestion()
+    if (queried || request) return
+    if (now() < nextQueryAt) {
+      presentation.setPhase('stabilizing', `等待查询间隔，${Math.ceil((nextQueryAt - now()) / 1000)}秒后识别`)
       return
     }
-    const stable = parsed
-    const fingerprint = createQuestionFingerprint(stable.normalizedQuestion)
-    const questionChanged = Boolean(lastStableQuestion) && !isCurrentQuestion(stable.normalizedQuestion)
-
-    if (questionChanged) {
-      // 仅在 OCR 确认题干变化后撤下旧答案，忽略倒计时、光效等像素级变化。
-      invalidateActiveSolve()
-      matcherStore.clear()
-    }
-    const ocrConfidence = (recognized.question.confidence + recognized.options.confidence) / 2
-    lastStableFrameHash = captured.frameHash
-    lastStableQuestion = stable.normalizedQuestion
-    lastStableSnapshot = { parsed: stable, ocrConfidence, frameHash: captured.frameHash }
-    if (fingerprint !== activeFingerprint) {
-      invalidateActiveSolve()
-      if (questionChanged) matcherStore.clear()
-      activeFingerprint = fingerprint
-    }
-    const categoryId = getCategoryId()
-    const cooldown = getActiveCooldownState(stable.normalizedQuestion, categoryId)
-    if (cooldown.question || cooldown.category) {
-      snapshotRetryPending = true
-      recognitionStore.setPhase(
-        'waitingRetry',
-        cooldown.category
-          ? '当前分类请求过于频繁，请稍后重试'
-          : '当前题目暂在失败冷却中',
-      )
-      return
-    }
-
-    if (activeRequestController) return
-    snapshotRetryPending = false
-    void solveStableQuestion(stable, ocrConfidence, observedCacheGeneration)
+    void solve(frame, generation)
   }
 
-  /** 在静态画面冷却到期后复用最后稳定快照，避免重复 OCR。 */
-  function resumeStableSnapshotIfReady(): void {
-    const snapshot = lastStableSnapshot
-    if (
-      !snapshot
-      || snapshot.frameHash !== lastStableFrameHash
-      || !snapshotRetryPending
-      || activeRequestController
-    ) return
-
-    const categoryId = getCategoryId()
-    const cooldown = getActiveCooldownState(snapshot.parsed.normalizedQuestion, categoryId)
-    if (cooldown.question || cooldown.category) return
-
-    snapshotRetryPending = false
-    void solveStableQuestion(
-      snapshot.parsed,
-      snapshot.ocrConfidence,
-      observedCacheGeneration,
-    )
-  }
-
-  /** 将一次识别帧追加到共享串行队列，避免 OCR 或请求重叠。 */
-  function enqueueFrame(): Promise<void> {
-    const scheduledGeneration = lifecycleGeneration
-    const cycle = detectionTail
-      .catch(() => undefined)
-      .then(() => processFrame(scheduledGeneration))
-    detectionTail = cycle
-    return cycle
-  }
-
-  /** 按固定间隔持续调度串行识别帧。 */
-  async function runLoop(): Promise<void> {
-    while (running) {
-      const cycleStartedAt = getCaptureIntervalMs ? now() : 0
-      try {
-        await enqueueFrame()
-      } catch (error) {
-        if (running) {
-          const message = error instanceof Error ? error.message : '连续识别发生异常'
-          matcherStore.setError(message)
-          recognitionStore.setPhase('waitingRetry', message)
-        }
-      }
-      if (!running) break
-      if (!getCaptureIntervalMs) {
-        await sleep(POLL_INTERVAL_MS)
-        continue
-      }
-      const elapsedMs = Math.max(0, now() - cycleStartedAt)
-      const remainingMs = Math.max(0, getCaptureIntervalMs() - elapsedMs)
-      if (remainingMs > 0) await sleep(remainingMs)
+  /** 串行抽帧，停止后旧循环自动退出，不和新一轮共享画面交叉。 */
+  async function run(generation: number): Promise<void> {
+    while (running && lifecycle === generation) {
+      detectionTail = detectionTail.then(() => detect(generation)).catch(error => {
+        if (generation !== lifecycle) return
+        running = false
+        request?.abort()
+        presentation.setRunning(false)
+        presentation.clearResult()
+        presentation.setPhase('waitingRetry', error instanceof Error ? error.message : '画面读取失败，请重新校准')
+      })
+      await detectionTail
+      if (running && lifecycle === generation) await sleep(CAPTURE_INTERVAL_MS)
     }
   }
 
-  return {
-    /** 启动连续识别循环；重复调用不会创建第二个循环。 */
-    start(): void {
-      if (running) return
-      running = true
-      recognitionStore.setRunning(true)
-      if (!loopPromise) {
-        const currentLoop = runLoop()
-        loopPromise = currentLoop
-        void currentLoop.then(() => {
-          if (loopPromise === currentLoop) loopPromise = null
-        }, () => {
-          if (loopPromise === currentLoop) loopPromise = null
-        })
-      }
-    },
-
-    /** 停止识别、中止活动请求，并使全部在途结果失效。 */
-    stop(): void {
-      running = false
-      lifecycleGeneration += 1
-      invalidateActiveSolve()
-      clearCurrentQuestionContext()
-      recognitionStore.setRunning(false)
-      recognitionStore.setPhase('paused', '连续识别已暂停')
-    },
-
-    /** 清除当前题目失败冷却并立即串行处理一帧。 */
-    async retry(): Promise<void> {
-      const retryQuestion = lastStableQuestion
-      lifecycleGeneration += 1
-      invalidateActiveSolve()
-      if (retryQuestion) {
-        const cooldown = findActiveFailureCooldown(retryQuestion)
-        if (cooldown) questionFailureCooldowns.delete(cooldown.normalizedQuestion)
-      }
-      clearCurrentQuestionContext()
-      matcherStore.setError('')
-      await enqueueFrame()
-    },
-
-    /** 切换分类时清除题目上下文并废弃旧分类的在途结果。 */
-    resetForCategory(): void {
-      lifecycleGeneration += 1
-      invalidateActiveSolve()
-      questionFailureCooldowns.clear()
-      remoteResultCache.clear()
-      clearCurrentQuestionContext()
-      recognitionStore.setLastCompletedFingerprint(null)
-      recognitionStore.setLastCompletedQuestion(null)
-      lastCompletedCache = null
-      recognitionStore.setPhase(running ? 'capturing' : 'idle', running ? '等待识别新分类题目' : '')
-      matcherStore.clear()
-    },
+  /** 从新的稳定检测周期启动监测，保留限流预算。 */
+  function start(): void {
+    if (running || !dependencies.getCategoryId()) return
+    running = true
+    queried = false
+    monitor.reset()
+    invalidateScene()
+    presentation.setRunning(true)
+    presentation.setPhase('capturing', '正在监测题干，稳定后自动查询')
+    void run(++lifecycle)
   }
+
+  /** 停止后立即使在途结果失效，并清除屏幕上的旧答案。 */
+  function stop(): void {
+    running = false
+    lifecycle += 1
+    invalidateScene()
+    monitor.reset()
+    presentation.setRunning(false)
+    presentation.setPhase('paused', '连续识别已停止')
+  }
+
+  /** 手动重试不会突破两秒间隔或一分钟限流保护。 */
+  async function retry(): Promise<void> {
+    if (!running) { start(); return }
+    invalidateScene()
+    queried = false
+    monitor.reset()
+    presentation.setPhase('stabilizing', '正在重新检查当前题干')
+  }
+
+  return { start, stop, retry, resetForCategory: stop }
 }
 
-/** 使用屏幕捕获、OCR、远程查询、缓存与 Pinia Store 创建生产控制器。 */
+/** 将唯一的175dt截图通道接入当前共享窗口和界面Store。 */
 export function useRecognitionController(): RecognitionController {
   const captureStore = useCaptureStore()
   const configStore = useConfigStore()
-  const dbStore = useDBStore()
-  const matcherStore = useMatcherStore()
-  const ocrStore = useOCRStore()
   const recognitionStore = useRecognitionStore()
   const { captureCurrentFrame } = useScreenCapture()
-  const { recognizeFrame } = useOCR()
-  const runtimeAdapters = createRecognitionRuntimeAdapters({
-    captureFrame: () => captureCurrentFrame(configStore.config.capture),
-    captureStore,
-    ocrStore,
-  })
-
   return createRecognitionController({
-    captureFrame: async () => {
-      await yieldToInteraction()
-      return runtimeAdapters.captureFrame()
+    /** 只发布题干裁剪帧，不读取选项或本地题库。 */
+    captureFrame() {
+      const frame = captureCurrentFrame(configStore.config.capture)
+      if (frame) captureStore.setFrame(frame)
+      return frame
     },
-    recognizeFrame: async (frame) => {
-      await yieldToInteraction()
-      return await recognizeFrame(frame, configStore.config.ocr)
+    /** 编码完成后再次检查取消状态，避免旧题进入上传队列。 */
+    async queryScreenshot(categoryId, frame, options) {
+      const blob = await encodeQuestionScreenshot(frame)
+      if (options.signal?.aborted) return { kind: 'timeout', message: '请求已取消' }
+      return await queryRemoteScreenshot(categoryId, blob, options)
     },
-    searchLocal: (parsed) => matchQuestion(
-      parsed,
-      dbStore.questions,
-      0.82,
-      dbStore.trigramIndex,
-    ),
-    correctRemoteQuery: (parsed) => findLikelyQuestionText(
-      parsed,
-      dbStore.questions,
-      dbStore.trigramIndex,
-    ),
-    query: queryRemoteQuestions,
-    sleep: async (durationMs) => await new Promise((resolve) => setTimeout(resolve, durationMs)),
-    getCaptureIntervalMs: () => {
-      const fps = normalizeCaptureFps(configStore.config.capture.captureFps)
-      return 1_000 / fps
-    },
-    readCache: getRemoteQuestionCache,
-    writeCache: putRemoteQuestionCache,
-    persistRemoteQuestions: persistRemoteQuestionsInWorker,
     getCategoryId: () => configStore.config.remoteQuery.categoryId,
     getRequestTimeoutMs: () => configStore.config.remoteQuery.requestTimeoutMs,
-    now: () => Date.now(),
-    ocrPresentation: {
-      publishStarted: runtimeAdapters.publishOCRStarted,
-      publishResult: runtimeAdapters.publishOCRResult,
-      publishError: runtimeAdapters.publishOCRError,
-    },
-    recognitionStore: {
-      /** 读取 Pinia 中的共享缓存代次。 */
-      get cacheGeneration() {
-        return recognitionStore.cacheGeneration
-      },
-      /** 读取 Pinia 中最近完成的题目指纹。 */
-      get lastCompletedFingerprint() {
-        return recognitionStore.lastCompletedFingerprint
-      },
-      /** 读取 Pinia 中最近完成的标准化题干。 */
-      get lastCompletedQuestion() {
-        return recognitionStore.lastCompletedQuestion
-      },
-      /** 同步流程阶段和用户提示。 */
-      setPhase(phase, message) {
-        recognitionStore.setPhase(phase)
-        recognitionStore.setMessage(message)
-      },
-      /** 同步连续识别运行状态。 */
-      setRunning(value) {
-        recognitionStore.setRunning(value)
-      },
-      /** 同步最近完成的题目指纹。 */
-      setLastCompletedFingerprint(fingerprint) {
-        recognitionStore.setLastCompletedFingerprint(fingerprint)
-      },
-      /** 同步最近完成的标准化题干。 */
-      setLastCompletedQuestion(question) {
-        recognitionStore.setLastCompletedQuestion(question)
-      },
-      /** 同步结果来源和本次求解耗时。 */
-      setOutcome(resultSource, durationMs) {
-        recognitionStore.resultSource = resultSource
-        recognitionStore.durationMs = durationMs
-      },
-    },
-    matcherStore,
+    now: () => performance.now(),
+    sleep: async durationMs => await new Promise(resolve => setTimeout(resolve, durationMs)),
+    recognitionStore,
   })
-}
-
-/** 在像素处理前让出一次主线程，使已经排队的点击和输入优先得到响应。 */
-async function yieldToInteraction(): Promise<void> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 0))
 }
