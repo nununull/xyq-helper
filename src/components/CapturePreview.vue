@@ -72,21 +72,21 @@ onBeforeUnmount(() => {
         最近识别：{{ new Date(frame.capturedAt).toLocaleTimeString() }}
       </span>
     </div>
-    <div v-if="stream" class="capture-preview-stage" :class="`answer-dock-${dockSide}`">
+    <div v-if="stream" class="capture-preview-stage" :class="[`answer-dock-${dockSide}`, { 'has-answer': Boolean($slots.default) }]">
       <div class="capture-preview-video">
         <video ref="video" muted playsinline @loadedmetadata="syncVideoSize" @resize="syncVideoSize" />
         <svg v-if="questionRegion && videoSize.width" class="question-region-outline" :viewBox="`0 0 ${videoSize.width} ${videoSize.height}`" aria-hidden="true">
           <rect :x="questionRegion.x" :y="questionRegion.y" :width="questionRegion.width" :height="questionRegion.height" />
         </svg>
       </div>
-      <div class="capture-preview-overlay">
+      <div v-if="$slots.default" class="capture-preview-overlay">
         <slot />
       </div>
     </div>
     <p v-else class="muted">暂无共享画面，请先连接游戏窗口。</p>
-    <div v-if="frame" class="question-screenshot-preview">
-      <small>实际题干截图 · 仅在画面变化并稳定后上传</small>
+    <details v-if="frame" class="question-screenshot-preview">
+      <summary>核对实际题干截图</summary>
       <canvas ref="screenshot" aria-label="实际发送给175dt的题干截图" />
-    </div>
+    </details>
   </section>
 </template>

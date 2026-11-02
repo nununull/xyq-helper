@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   convertPreviewRegionToVideoPixels,
   convertVideoRegionToPreviewPixels,
+  fitVideoToContainer,
 } from '../features/setup/previewCoordinates'
 import type { CaptureRegion } from '../types/capture'
 
@@ -16,15 +17,17 @@ const emit = defineEmits<{
 }>()
 
 const video = ref<HTMLVideoElement | null>(null)
+const viewport = ref<HTMLElement | null>(null)
 const stage = ref<HTMLElement | null>(null)
 const selecting = ref(false)
 const startPoint = ref({ x: 0, y: 0 })
 const draftRegion = ref<CaptureRegion | null>(null)
 const questionRegion = ref<CaptureRegion | null>(null)
-const previewSize = ref({ width: 0, height: 0 })
+const viewportSize = ref({ width: 0, height: 0 })
 const videoSize = ref({ width: 0, height: 0 })
 let resizeObserver: ResizeObserver | null = null
 
+const previewSize = computed(() => fitVideoToContainer(videoSize.value, viewportSize.value))
 const questionPreviewRegion = computed(() => toPreviewRegion(questionRegion.value))
 const visibleRegion = computed(() => draftRegion.value ?? questionPreviewRegion.value)
 
@@ -34,11 +37,11 @@ function toPreviewRegion(region: CaptureRegion | null): CaptureRegion | null {
   return convertVideoRegionToPreviewPixels(region, videoSize.value, previewSize.value)
 }
 
-/** 同步共享视频与预览容器尺寸。 */
+/** 同步可用空间和视频原始尺寸，让框选表面始终贴合等比缩放后的画面。 */
 function syncStageSize(): void {
-  const bounds = stage.value?.getBoundingClientRect()
+  const bounds = viewport.value?.getBoundingClientRect()
   const source = video.value
-  if (bounds) previewSize.value = { width: bounds.width, height: bounds.height }
+  if (bounds) viewportSize.value = { width: bounds.width, height: bounds.height }
   if (source?.videoWidth && source.videoHeight) {
     if (videoSize.value.width && (videoSize.value.width !== source.videoWidth || videoSize.value.height !== source.videoHeight)) {
       questionRegion.value = null
@@ -134,7 +137,7 @@ function regionStyle(region: CaptureRegion): Record<string, string> {
 watch(() => props.stream, () => void bindStream())
 onMounted(() => {
   resizeObserver = new ResizeObserver(syncStageSize)
-  if (stage.value) resizeObserver.observe(stage.value)
+  if (viewport.value) resizeObserver.observe(viewport.value)
   void bindStream()
 })
 onBeforeUnmount(() => {
@@ -154,20 +157,23 @@ onBeforeUnmount(() => {
         <span><i class="answer-color" />将发送给175dt的题干</span>
       </div>
     </div>
-    <div
-      ref="stage"
-      class="calibration-stage"
-      @pointerdown="startSelection"
-      @pointermove="moveSelection"
-      @pointerup="finishSelection"
-    >
-      <video ref="video" muted playsinline @loadedmetadata="syncStageSize" @resize="syncStageSize" />
+    <div ref="viewport" class="calibration-viewport">
       <div
-        v-if="visibleRegion"
-        class="calibration-selection answer-selection active"
-        :style="regionStyle(visibleRegion)"
+        ref="stage"
+        class="calibration-stage"
+        :style="{ width: `${previewSize.width}px`, height: `${previewSize.height}px` }"
+        @pointerdown="startSelection"
+        @pointermove="moveSelection"
+        @pointerup="finishSelection"
       >
-        <span v-if="!draftRegion">题干区域</span>
+        <video ref="video" muted playsinline @loadedmetadata="syncStageSize" @resize="syncStageSize" />
+        <div
+          v-if="visibleRegion"
+          class="calibration-selection answer-selection active"
+          :style="regionStyle(visibleRegion)"
+        >
+          <span v-if="!draftRegion">题干区域</span>
+        </div>
       </div>
     </div>
     <div class="calibration-actions">

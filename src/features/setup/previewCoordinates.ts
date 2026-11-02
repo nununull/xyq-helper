@@ -5,6 +5,13 @@ interface Size {
   height: number
 }
 
+/** 按可用宽高等比容纳完整视频，供校准选框使用真实画面尺寸。 */
+export function fitVideoToContainer(video: Size, container: Size): Size {
+  if (!video.width || !video.height || !container.width || !container.height) return { width: 0, height: 0 }
+  const scale = Math.min(container.width / video.width, container.height / video.height)
+  return { width: video.width * scale, height: video.height * scale }
+}
+
 /** 将预览元素中的矩形换算为共享视频原始像素坐标。 */
 export function convertPreviewRegionToVideoPixels(
   region: CaptureRegion,

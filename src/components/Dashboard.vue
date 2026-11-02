@@ -181,7 +181,9 @@ onBeforeUnmount(() => {
         <p class="panel flow-hint">{{ actionHint }}</p>
         <CaptureCalibration v-if="calibrating && previewStream" :stream="previewStream" @completed="completeCalibration" @cancel="cancelCalibration" />
         <CapturePreview v-else :stream="previewStream" :frame="captureStore.lastFrame" :question-region="questionRegion" :focus-mode="focusMode">
-          <AnswerOverlay :candidates="recognitionStore.candidates" :message="recognitionStore.message" :phase="recognitionStore.phase" :running="recognitionStore.running" />
+          <template v-if="!answerPictureInPicture.opened.value" #default>
+            <AnswerOverlay :candidates="recognitionStore.candidates" :message="recognitionStore.message" :phase="recognitionStore.phase" :running="recognitionStore.running" />
+          </template>
         </CapturePreview>
       </main>
       <aside class="rightbar">
