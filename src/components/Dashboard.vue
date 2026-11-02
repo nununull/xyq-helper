@@ -75,7 +75,6 @@ async function startCapture(): Promise<void> {
     if (!await screenCapture.startCapture()) return
     previewStream.value = screenCapture.getActiveStream()
     captureStore.setStatus('active')
-    focusMode.value = true
     if (hasCalibration.value) controller.start()
     else calibrating.value = true
   } catch (error) {
@@ -112,7 +111,6 @@ function beginCalibration(): void {
   calibrationRevision += 1
   controller.stop()
   calibrating.value = true
-  focusMode.value = true
 }
 
 /** 保存题干选框和原始窗口尺寸，立即恢复自动识别。 */
