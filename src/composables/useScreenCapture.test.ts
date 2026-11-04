@@ -15,7 +15,7 @@ function createTrackAndStream() {
 /** 为每次屏幕捕获提供可立即播放的模拟视频元素。 */
 function stubVideoElements(): void {
   vi.stubGlobal('document', {
-    createElement: vi.fn().mockImplementation(() => ({
+    createElement: vi.fn().mockImplementation(() => Object.assign(new EventTarget(), {
       play: vi.fn().mockResolvedValue(undefined),
       muted: false,
       srcObject: null,
@@ -46,7 +46,7 @@ describe('屏幕捕获结束监听', () => {
       mediaDevices: { getDisplayMedia: vi.fn().mockResolvedValue(stream) },
     })
     vi.stubGlobal('document', {
-      createElement: vi.fn().mockReturnValue({ play, muted: false, srcObject: null }),
+      createElement: vi.fn().mockReturnValue(Object.assign(new EventTarget(), { play, muted: false, srcObject: null })),
     })
     const capture = useScreenCapture()
     const listener = vi.fn()
@@ -71,11 +71,11 @@ describe('屏幕捕获结束监听', () => {
       mediaDevices: { getDisplayMedia: vi.fn().mockResolvedValue(stream) },
     })
     vi.stubGlobal('document', {
-      createElement: vi.fn().mockReturnValue({
+      createElement: vi.fn().mockReturnValue(Object.assign(new EventTarget(), {
         play: vi.fn().mockResolvedValue(undefined),
         muted: false,
         srcObject: null,
-      }),
+      })),
     })
     const capture = useScreenCapture()
 
@@ -145,18 +145,18 @@ describe('屏幕捕获结束监听', () => {
     const first = createTrackAndStream()
     const second = createTrackAndStream()
     let rejectFirstPlay!: (error: Error) => void
-    const firstVideo = {
+    const firstVideo = Object.assign(new EventTarget(), {
       play: vi.fn().mockImplementation(async () => await new Promise<void>((_resolve, reject) => {
         rejectFirstPlay = reject
       })),
       muted: false,
       srcObject: null,
-    }
-    const secondVideo = {
+    })
+    const secondVideo = Object.assign(new EventTarget(), {
       play: vi.fn().mockResolvedValue(undefined),
       muted: false,
       srcObject: null,
-    }
+    })
     vi.stubGlobal('navigator', {
       mediaDevices: {
         getDisplayMedia: vi.fn()
@@ -226,7 +226,7 @@ describe('屏幕捕获结束监听', () => {
 
   it('只裁剪题干，并在共享窗口分辨率改变后要求重新框选', async () => {
     const { stream } = createTrackAndStream()
-    const video = { play: vi.fn().mockResolvedValue(undefined), videoWidth: 1024, videoHeight: 768 }
+    const video = Object.assign(new EventTarget(), { play: vi.fn().mockResolvedValue(undefined), videoWidth: 1024, videoHeight: 768 })
     const image = { width: 300, height: 80, data: new Uint8ClampedArray(300 * 80 * 4) } as ImageData
     const context = { clearRect: vi.fn(), drawImage: vi.fn(), getImageData: vi.fn().mockReturnValue(image) }
     const canvas = { width: 0, height: 0, getContext: vi.fn().mockReturnValue(context) }
@@ -242,6 +242,8 @@ describe('屏幕捕获结束监听', () => {
     expect(capture.captureCurrentFrame(config)?.questionImage).toBe(image)
     expect(context.drawImage).toHaveBeenCalledWith(video, 10, 20, 300, 80, 0, 0, 300, 80)
     video.videoWidth = 1280
+    video.dispatchEvent(new Event('resize'))
+    expect(capture.sourceSize.value).toEqual({ width: 1280, height: 768 })
     expect(() => capture.captureCurrentFrame(config)).toThrow('重新框选')
   })
 })

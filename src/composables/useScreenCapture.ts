@@ -1,3 +1,4 @@
+import { readonly, shallowRef } from 'vue'
 import type { CaptureConfig, CaptureFrame, CaptureRegion } from '../types/capture'
 import { createFrameHash } from '../utils/frameHash'
 
@@ -6,6 +7,15 @@ let videoElement: HTMLVideoElement | null = null
 let activeVideoTrack: MediaStreamTrack | null = null
 let activeTrackEndedHandler: (() => void) | null = null
 let captureGeneration = 0
+const sourceSize = shallowRef<NonNullable<CaptureConfig['sourceSize']> | null>(null)
+
+/** 同步视频原始尺寸，供识别切换到匹配的题干框。 */
+function syncSourceSize(): void {
+  if (!videoElement?.videoWidth || !videoElement.videoHeight) return
+  const { videoWidth: width, videoHeight: height } = videoElement
+  if (sourceSize.value?.width === width && sourceSize.value.height === height) return
+  sourceSize.value = { width, height }
+}
 const captureEndedListeners = new Set<() => void>()
 
 interface CaptureSurface {
@@ -30,7 +40,9 @@ function releaseActiveCapture(): void {
   activeVideoTrack?.removeEventListener('ended', activeTrackEndedHandler ?? notifyCaptureEnded)
   if (mediaStream) stopStream(mediaStream)
   mediaStream = null
+  videoElement?.removeEventListener('resize', syncSourceSize)
   videoElement = null
+  sourceSize.value = null
   activeVideoTrack = null
   activeTrackEndedHandler = null
   questionSurface = null
@@ -73,6 +85,7 @@ export function useScreenCapture() {
     video.muted = true
     mediaStream = stream
     videoElement = video
+    video.addEventListener('resize', syncSourceSize)
     activeVideoTrack = videoTrack
     activeTrackEndedHandler = endedHandler
 
@@ -85,7 +98,9 @@ export function useScreenCapture() {
       throw error
     }
 
-    return generation === captureGeneration && mediaStream === stream
+    if (generation !== captureGeneration || mediaStream !== stream) return false
+    syncSourceSize()
+    return true
   }
 
   /** 幂等停止当前屏幕共享并释放媒体引用。 */
@@ -131,6 +146,7 @@ export function useScreenCapture() {
   }
 
   return {
+    sourceSize: readonly(sourceSize),
     startCapture,
     stopCapture,
     onCaptureEnded,

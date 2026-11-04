@@ -20,6 +20,6 @@ async function persistSpeechEnabled(): Promise<void> {
       <span>语音播报答案<small>直接播报175dt返回的答案文本</small></span>
       <input v-model="configStore.config.overlay.speechEnabled" type="checkbox" @change="persistSpeechEnabled" />
     </label>
-    <small>只发送题干小图，不上传整张游戏窗口。游戏分辨率或题目位置变化后，请重新框选。</small>
+    <small>只发送题干小图，不上传整张游戏窗口。题干框按活动和共享画面尺寸保存。题目位置变化时，可重新框选。</small>
   </section>
 </template>

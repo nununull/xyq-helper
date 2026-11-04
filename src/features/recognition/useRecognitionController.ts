@@ -2,7 +2,7 @@ import { useScreenCapture } from '../../composables/useScreenCapture'
 import { useCaptureStore } from '../../stores/capture'
 import { useConfigStore } from '../../stores/config'
 import { useRecognitionStore } from '../../stores/recognition'
-import type { CaptureFrame } from '../../types/capture'
+import type { CaptureConfig, CaptureFrame } from '../../types/capture'
 import type { RecognitionPhase, RemoteQueryOptions, RemoteQueryResult, RemoteQuestionCandidate } from '../../types/remoteQuestion'
 import { encodeQuestionScreenshot, queryRemoteScreenshot } from '../remote-query/remoteScreenshotClient'
 import { createFrameMonitor } from './frameMonitor'
@@ -179,7 +179,7 @@ export function createRecognitionController(dependencies: RecognitionControllerD
 }
 
 /** 将唯一的175dt截图通道接入当前共享窗口和界面Store。 */
-export function useRecognitionController(): RecognitionController {
+export function useRecognitionController(getCaptureConfig: () => CaptureConfig): RecognitionController {
   const captureStore = useCaptureStore()
   const configStore = useConfigStore()
   const recognitionStore = useRecognitionStore()
@@ -187,7 +187,7 @@ export function useRecognitionController(): RecognitionController {
   return createRecognitionController({
     /** 只发布题干裁剪帧，不读取选项或本地题库。 */
     captureFrame() {
-      const frame = captureCurrentFrame(configStore.config.capture)
+      const frame = captureCurrentFrame(getCaptureConfig())
       if (frame) captureStore.setFrame(frame)
       return frame
     },

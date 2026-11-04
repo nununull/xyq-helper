@@ -1,4 +1,4 @@
-import type { CaptureConfig } from './capture'
+import type { CaptureConfig, CaptureRegion } from './capture'
 import { CAPTURE_INTERVAL_MS, CLIENT_TIMEOUT_MS } from '../../shared/recognition-policy.mjs'
 
 export const MIN_CAPTURE_FPS = 1
@@ -9,6 +9,8 @@ export const MAX_CAPTURE_FPS = 30
  */
 export interface AppConfig {
   capture: CaptureConfig
+  /** 按活动和原始画面尺寸保存的题干框。 */
+  questionRegions: Record<string, CaptureRegion>
   ocr: {
     grayscale: boolean
     binarize: boolean
@@ -33,6 +35,7 @@ export interface AppConfig {
 }
 
 export const defaultAppConfig: AppConfig = {
+  questionRegions: {},
   capture: {
     questionRegion: null,
     optionsRegion: null,
@@ -63,7 +66,7 @@ export const defaultAppConfig: AppConfig = {
 }
 
 export type PartialAppConfig = {
-  [Key in keyof AppConfig]?: Partial<AppConfig[Key]>
+  [Key in keyof AppConfig]?: Key extends 'questionRegions' ? AppConfig[Key] : Partial<AppConfig[Key]>
 }
 
 /** 将抽帧频率约束到应用支持的整数范围。 */
@@ -78,6 +81,7 @@ export function mergeAppConfig(config: PartialAppConfig | null | undefined): App
   const capture = { ...defaultAppConfig.capture, ...config?.capture }
   const calibrated = capture.regionCoordinateSpace === '175dt-question-v1'
   return {
+    questionRegions: Object.fromEntries(Object.entries(config?.questionRegions ?? {}).map(([key, region]) => [key, { ...region }])),
     capture: {
       devicePixelRatio: capture.devicePixelRatio,
       captureFps: normalizeCaptureFps(capture.captureFps),

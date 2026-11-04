@@ -10,8 +10,7 @@ import { useRecognitionController } from '../features/recognition/useRecognition
 import { getCaptureErrorMessage, useCaptureStore } from '../stores/capture'
 import { useConfigStore } from '../stores/config'
 import { useRecognitionStore } from '../stores/recognition'
-import { applyQuestionRegion } from '../features/setup/applyCaptureRegion'
-import { hasValidCaptureRegions } from '../types/config'
+import { applyQuestionRegion, resolveCaptureConfig } from '../features/setup/applyCaptureRegion'
 import type { CaptureRegion } from '../types/capture'
 import { activityCategoryGroups } from '../data/activityCategories'
 import { useAnswerPictureInPicture } from '../composables/useAnswerPictureInPicture'
@@ -20,7 +19,6 @@ const captureStore = useCaptureStore()
 const configStore = useConfigStore()
 const recognitionStore = useRecognitionStore()
 const screenCapture = useScreenCapture()
-const controller = useRecognitionController()
 const answerPictureInPicture = useAnswerPictureInPicture()
 const previewStream = shallowRef<MediaStream | null>(null)
 const calibrating = ref(false)
@@ -30,12 +28,14 @@ let calibrationRevision = 0
 const selectedCategoryId = computed(() => configStore.config.remoteQuery.categoryId)
 const selectedCategoryName = computed(() => activityCategoryGroups.flatMap(group => group.categories)
   .find(category => category.id === selectedCategoryId.value)?.name ?? '')
-const hasCalibration = computed(() => hasValidCaptureRegions(configStore.config.capture))
-const questionRegion = computed(() => hasCalibration.value ? configStore.config.capture.questionRegion : null)
+const activeCapture = computed(() => resolveCaptureConfig(configStore.config, screenCapture.sourceSize.value))
+const questionRegion = computed(() => activeCapture.value.questionRegion)
+const controller = useRecognitionController(() => activeCapture.value)
 const captureStatusLabel = computed(() => ({ idle: '待连接', requesting: '选择窗口中', active: '已连接', paused: '已停止', error: '异常' }[captureStore.status]))
 const actionHint = computed(() => {
   if (!selectedCategoryId.value) return '先选择活动，再连接游戏窗口。'
   if (calibrating.value) return '只框选题干文字；看图题只框选待识别的小图。不包含选项、倒计时、头像和装饰。'
+  if (previewStream.value && !questionRegion.value) return '当前活动和画面尺寸还没有保存题干框，请框选题干。'
   if (previewStream.value) return '只在题干稳定后查询175dt。同一画面只自动查询一次，换题后自动继续。'
   return '连接游戏窗口后框选题干。原始题干小图会发送到175dt识别。'
 })
@@ -75,8 +75,6 @@ async function startCapture(): Promise<void> {
     if (!await screenCapture.startCapture()) return
     previewStream.value = screenCapture.getActiveStream()
     captureStore.setStatus('active')
-    if (hasCalibration.value) controller.start()
-    else calibrating.value = true
   } catch (error) {
     controller.stop()
     screenCapture.stopCapture()
@@ -103,8 +101,18 @@ async function selectCategory(categoryId: string): Promise<void> {
   if (categoryId === selectedCategoryId.value) return
   controller.stop()
   await configStore.selectActivityCategory(categoryId)
-  if (previewStream.value && !calibrating.value && hasCalibration.value) controller.start()
 }
+
+/** 活动或原始画面尺寸改变时，废弃旧答案和草稿，再按新组合恢复识别。 */
+watch([previewStream, selectedCategoryId, screenCapture.sourceSize], () => {
+  if (!previewStream.value) return
+  calibrationRevision += 1
+  controller.stop()
+  captureStore.lastFrame = null
+  captureStore.error = ''
+  calibrating.value = !questionRegion.value
+  if (questionRegion.value) controller.start()
+})
 
 /** 暂停上传，在当前共享画面上重新框选题干。 */
 function beginCalibration(): void {
@@ -117,7 +125,9 @@ function beginCalibration(): void {
 async function completeCalibration(region: CaptureRegion, sourceSize: { width: number; height: number }): Promise<void> {
   const revision = ++calibrationRevision
   const stream = previewStream.value
-  if (!stream || !calibrating.value) return
+  const currentSize = screenCapture.sourceSize.value
+  if (!stream || !calibrating.value || !selectedCategoryId.value
+    || currentSize?.width !== sourceSize.width || currentSize.height !== sourceSize.height) return
   try {
     await configStore.update(applyQuestionRegion(configStore.config, region, sourceSize))
     if (revision !== calibrationRevision || stream !== previewStream.value || !calibrating.value) return
@@ -133,7 +143,7 @@ async function completeCalibration(region: CaptureRegion, sourceSize: { width: n
 function cancelCalibration(): void {
   calibrationRevision += 1
   calibrating.value = false
-  if (hasCalibration.value) controller.start()
+  if (questionRegion.value) controller.start()
 }
 
 /** 浏览器停止共享后释放界面状态和在途请求。 */
@@ -166,7 +176,7 @@ onBeforeUnmount(() => {
         <button class="focus-action" type="button" :disabled="!previewStream" :aria-pressed="focusMode" @click="focusMode = !focusMode">{{ focusMode ? '退出专注' : '放大画面' }}</button>
         <button class="primary-action" type="button" :disabled="!selectedCategoryId || !serviceReady || captureStore.status === 'requesting' || Boolean(previewStream)" @click="startCapture">连接游戏画面</button>
         <button class="subtle-action" type="button" :disabled="!previewStream && captureStore.status !== 'requesting'" @click="stopCapture">停止</button>
-        <button class="subtle-action" type="button" :disabled="!previewStream || calibrating" @click="controller.retry">手动重试</button>
+        <button class="subtle-action" type="button" :disabled="!previewStream || calibrating || !questionRegion" @click="controller.retry">手动重试</button>
         <button class="subtle-action" type="button" :disabled="!previewStream || calibrating" @click="beginCalibration">重新框选</button>
       </div>
     </header>
@@ -179,7 +189,7 @@ onBeforeUnmount(() => {
       <CategorySelector :selected-id="selectedCategoryId" @select="selectCategory" />
       <main class="workspace">
         <p class="panel flow-hint">{{ actionHint }}</p>
-        <CaptureCalibration v-if="calibrating && previewStream" :stream="previewStream" @completed="completeCalibration" @cancel="cancelCalibration" />
+        <CaptureCalibration v-if="calibrating && previewStream" :key="`${selectedCategoryId}:${screenCapture.sourceSize.value?.width}x${screenCapture.sourceSize.value?.height}`" :stream="previewStream" @completed="completeCalibration" @cancel="cancelCalibration" />
         <CapturePreview v-else :stream="previewStream" :frame="captureStore.lastFrame" :question-region="questionRegion" :focus-mode="focusMode">
           <template v-if="!answerPictureInPicture.opened.value" #default>
             <AnswerOverlay :candidates="recognitionStore.candidates" :message="recognitionStore.message" :phase="recognitionStore.phase" :running="recognitionStore.running" />
