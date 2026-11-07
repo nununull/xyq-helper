@@ -26,4 +26,14 @@ describe('配置 Store', () => {
     expect(originalConfig.remoteQuery.categoryId).toBe('')
     expect(saveConfig).toHaveBeenCalledWith(store.config)
   })
+
+  it('自定义换题阈值会保存，重新合并持久化配置后仍沿用用户选择', async () => {
+    const { saveConfig } = await import('../composables/useLocalStorageDB')
+    const { useConfigStore } = await import('./config')
+    const { mergeAppConfig } = await import('../types/config')
+    const store = useConfigStore()
+    await store.setChangeThresholdPercent(1.2)
+    const saved = vi.mocked(saveConfig).mock.calls.at(-1)![0]
+    expect(mergeAppConfig(JSON.parse(JSON.stringify(saved))).capture.changeThresholdPercent).toBe(1.2)
+  })
 })

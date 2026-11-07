@@ -65,7 +65,7 @@ export function useScreenCapture() {
     let stream: MediaStream
     try {
       stream = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
+        video: { cursor: 'never' } as MediaTrackConstraints & { cursor: string },
         audio: false,
       })
     } catch (error) {

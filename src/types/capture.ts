@@ -21,6 +21,8 @@ export interface CaptureConfig {
   regionCoordinateSpace: 'video-pixel-v1' | '175dt-question-v1' | null
   devicePixelRatio: number
   captureFps: number
+  /** 超过该百分比的像素明显变化后才判定换题，0表示最高灵敏度。 */
+  changeThresholdPercent: number
 }
 
 /**

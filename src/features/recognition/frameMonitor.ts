@@ -1,4 +1,4 @@
-import { STABILITY_MS } from '../../../shared/recognition-policy.mjs'
+import { DEFAULT_CHANGE_THRESHOLD_PERCENT, STABILITY_MS } from '../../../shared/recognition-policy.mjs'
 
 interface FrameSignature {
   width: number
@@ -26,24 +26,24 @@ function sampleFrame(image: ImageData): FrameSignature {
 }
 
 /** 忽略压缩、抗锯齿和轻微亮度抖动，保留局部文字变化。 */
-function isSameFrame(left: FrameSignature, right: FrameSignature): boolean {
+function isSameFrame(left: FrameSignature, right: FrameSignature, thresholdPercent: number): boolean {
   if (left.width !== right.width || left.height !== right.height) return false
   let changes = 0
   for (let index = 0; index < left.pixels.length; index += 1) {
     if (Math.abs(left.pixels[index]! - right.pixels[index]!) > 24) changes += 1
   }
-  return changes <= 2
+  return changes <= Math.max(2, Math.floor(left.pixels.length * thresholdPercent / 100))
 }
 
 /** 在画面持续稳定500毫秒后放行一次题干，纯色和黑屏始终不放行。 */
-export function createFrameMonitor() {
+export function createFrameMonitor(getThresholdPercent: () => number = () => DEFAULT_CHANGE_THRESHOLD_PERCENT) {
   let current: FrameSignature | null = null
   let stableSince = 0
 
   /** 比较当前截图与本轮候选画面，累计稳定时间。 */
   function observe(image: ImageData, now: number) {
     const next = sampleFrame(image)
-    const changed = !current || !isSameFrame(current, next)
+    const changed = !current || current.blank !== next.blank || !isSameFrame(current, next, getThresholdPercent())
     if (changed) {
       current = next
       stableSince = now

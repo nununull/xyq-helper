@@ -30,6 +30,8 @@ export interface RecognitionControllerDependencies {
   getCategoryId(): string
   /** 获取整条识别请求的超时。 */
   getRequestTimeoutMs(): number
+  /** 获取换题变化阈值，使用户调节立即生效。 */
+  getChangeThresholdPercent(): number
   /** 获取单调时钟。 */
   now(): number
   /** 等待下一次纯本地抽帧。 */
@@ -51,7 +53,7 @@ export interface RecognitionController {
 /** 只在题干稳定后上传一次，画面变化立即取消旧题且拒绝迟到结果。 */
 export function createRecognitionController(dependencies: RecognitionControllerDependencies): RecognitionController {
   const { recognitionStore: presentation, now, sleep } = dependencies
-  const monitor = createFrameMonitor()
+  const monitor = createFrameMonitor(dependencies.getChangeThresholdPercent)
   let running = false
   let lifecycle = 0
   let scene = 0
@@ -109,6 +111,7 @@ export function createRecognitionController(dependencies: RecognitionControllerD
     if (!running || lifecycle !== generation || !frame) return
     const state = monitor.observe(frame.questionImage, now())
     if (state.changed) {
+      console.info(JSON.stringify({ msg: '题干画面变化，撤下旧答案', categoryId: dependencies.getCategoryId(), changeThresholdPercent: dependencies.getChangeThresholdPercent() }))
       invalidateScene()
       queried = false
     }
@@ -199,6 +202,7 @@ export function useRecognitionController(getCaptureConfig: () => CaptureConfig):
     },
     getCategoryId: () => configStore.config.remoteQuery.categoryId,
     getRequestTimeoutMs: () => configStore.config.remoteQuery.requestTimeoutMs,
+    getChangeThresholdPercent: () => configStore.config.capture.changeThresholdPercent,
     now: () => performance.now(),
     sleep: async durationMs => await new Promise(resolve => setTimeout(resolve, durationMs)),
     recognitionStore,

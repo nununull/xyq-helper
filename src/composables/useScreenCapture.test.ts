@@ -138,6 +138,7 @@ describe('屏幕捕获结束监听', () => {
       regionCoordinateSpace: null,
       devicePixelRatio: 1,
       captureFps: 2,
+      changeThresholdPercent: 0.5,
     })).toBeNull()
   })
 
@@ -196,6 +197,7 @@ describe('屏幕捕获结束监听', () => {
         regionCoordinateSpace: null,
         devicePixelRatio: 1,
         captureFps: 2,
+        changeThresholdPercent: 0.5,
       })).toBeNull()
     })
     const unsubscribe = capture.onCaptureEnded(listener)
@@ -237,7 +239,7 @@ describe('屏幕捕获结束监听', () => {
     const config = {
       questionRegion: { x: 10, y: 20, width: 300, height: 80 }, optionsRegion: null,
       sourceSize: { width: 1024, height: 768 }, regionCoordinateSpace: '175dt-question-v1' as const,
-      devicePixelRatio: 1, captureFps: 4,
+      devicePixelRatio: 1, captureFps: 4, changeThresholdPercent: 0.5,
     }
     expect(capture.captureCurrentFrame(config)?.questionImage).toBe(image)
     expect(context.drawImage).toHaveBeenCalledWith(video, 10, 20, 300, 80, 0, 0, 300, 80)

@@ -1,5 +1,5 @@
 import type { CaptureConfig, CaptureRegion } from './capture'
-import { CAPTURE_INTERVAL_MS, CLIENT_TIMEOUT_MS } from '../../shared/recognition-policy.mjs'
+import { CAPTURE_INTERVAL_MS, CLIENT_TIMEOUT_MS, DEFAULT_CHANGE_THRESHOLD_PERCENT } from '../../shared/recognition-policy.mjs'
 
 export const MIN_CAPTURE_FPS = 1
 export const MAX_CAPTURE_FPS = 30
@@ -42,6 +42,7 @@ export const defaultAppConfig: AppConfig = {
     regionCoordinateSpace: null,
     devicePixelRatio: typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1,
     captureFps: 1_000 / CAPTURE_INTERVAL_MS,
+    changeThresholdPercent: DEFAULT_CHANGE_THRESHOLD_PERCENT,
   },
   ocr: {
     grayscale: true,
@@ -69,6 +70,12 @@ export type PartialAppConfig = {
   [Key in keyof AppConfig]?: Key extends 'questionRegions' ? AppConfig[Key] : Partial<AppConfig[Key]>
 }
 
+/** 将用户选择的换题变化阈值限制在0至5%，避免无效配置关闭检测。 */
+export function normalizeChangeThresholdPercent(value: unknown): number {
+  const threshold = Number(value)
+  return Number.isFinite(threshold) ? Math.min(5, Math.max(0, threshold)) : DEFAULT_CHANGE_THRESHOLD_PERCENT
+}
+
 /** 将抽帧频率约束到应用支持的整数范围。 */
 export function normalizeCaptureFps(value: unknown): number {
   const fps = Number(value)
@@ -85,6 +92,7 @@ export function mergeAppConfig(config: PartialAppConfig | null | undefined): App
     capture: {
       devicePixelRatio: capture.devicePixelRatio,
       captureFps: normalizeCaptureFps(capture.captureFps),
+      changeThresholdPercent: normalizeChangeThresholdPercent(capture.changeThresholdPercent),
       regionCoordinateSpace: calibrated ? '175dt-question-v1' : null,
       questionRegion: calibrated && capture.questionRegion ? { ...capture.questionRegion } : null,
       optionsRegion: null,

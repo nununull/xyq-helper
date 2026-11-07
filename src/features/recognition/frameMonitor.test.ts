@@ -12,6 +12,18 @@ function image(offset = 0): ImageData {
 }
 
 describe('题干画面稳定检测', () => {
+  it('按可调阈值忽略鼠标大小的变化，调高灵敏度后仍能发现细微换字', () => {
+    let threshold = 1
+    const monitor = createFrameMonitor(() => threshold)
+    monitor.observe(image(), 0)
+    monitor.observe(image(), 500)
+    const cursor = image()
+    for (let pixel = 0; pixel < 12; pixel += 1) cursor.data[pixel * 4] = 255 - cursor.data[pixel * 4]!
+    expect(monitor.observe(cursor, 750)).toMatchObject({ changed: false, stable: true })
+    threshold = 0
+    expect(monitor.observe(cursor, 1000)).toMatchObject({ changed: true, stable: false })
+  })
+
   it('稳定满500毫秒后才能请求，小幅亮度抖动不算换题', () => {
     const monitor = createFrameMonitor()
     expect(monitor.observe(image(), 0)).toMatchObject({ changed: true, stable: false })
@@ -37,7 +49,7 @@ describe('题干画面稳定检测', () => {
   })
 
   it('题干只改一个小字形时仍判定换题', () => {
-    const monitor = createFrameMonitor()
+    const monitor = createFrameMonitor(() => 0)
     monitor.observe(image(), 0)
     monitor.observe(image(), 500)
     const changed = image()
@@ -46,7 +58,7 @@ describe('题干画面稳定检测', () => {
   })
 
   it('宽题图中的小字变化不会被整图比例或缩放稀释', () => {
-    const monitor = createFrameMonitor()
+    const monitor = createFrameMonitor(() => 0)
     const data = new Uint8ClampedArray(640 * 80 * 4)
     for (let index = 0; index < data.length; index += 4) data.set([index % 12 ? 40 : 210, 40, 40, 255], index)
     const original = { width: 640, height: 80, data } as ImageData

@@ -25,6 +25,7 @@ function harness(query?: RecognitionControllerDependencies['queryScreenshot']) {
     queryScreenshot,
     getCategoryId: () => '53',
     getRequestTimeoutMs: () => 15000,
+    getChangeThresholdPercent: () => 0.5,
     now: () => Date.now(),
     sleep: async duration => await new Promise(resolve => setTimeout(resolve, duration)),
     recognitionStore: presentation,

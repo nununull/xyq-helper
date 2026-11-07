@@ -4,6 +4,7 @@ import {
   defaultAppConfig,
   mergeAppConfig,
   normalizeCaptureFps,
+  normalizeChangeThresholdPercent,
   type AppConfig,
 } from '../types/config'
 import { loadConfig, saveConfig } from '../composables/useLocalStorageDB'
@@ -14,6 +15,13 @@ export const useConfigStore = defineStore('config', {
     loaded: false,
   }),
   actions: {
+    /** 保存换题变化阈值，正在运行的监测在下一帧直接采用。 */
+    async setChangeThresholdPercent(value: number) {
+      const nextConfig = structuredClone(toRaw(this.config))
+      nextConfig.capture.changeThresholdPercent = normalizeChangeThresholdPercent(value)
+      await this.update(nextConfig)
+      console.info(JSON.stringify({ msg: '已保存换题变化阈值', changeThresholdPercent: nextConfig.capture.changeThresholdPercent }))
+    },
     /** 加载并补全持久化配置，兼容旧版本缺失的嵌套字段。 */
     async load() {
       this.config = mergeAppConfig(await loadConfig())

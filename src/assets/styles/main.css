@@ -1112,6 +1112,11 @@ pre {
   text-align: right;
 }
 
+.settings-panel .sensitivity-setting { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.sensitivity-setting > span { display: flex; justify-content: space-between; gap: 12px; }
+.sensitivity-setting output { color: var(--success); font-variant-numeric: tabular-nums; }
+.settings-panel input[type="range"] { height: 24px; padding: 0; accent-color: var(--success); cursor: pointer; }
+
 .cache-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
