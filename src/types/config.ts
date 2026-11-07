@@ -24,6 +24,8 @@ export interface AppConfig {
   /** 远程题库查询使用的活动分类与单次请求超时。 */
   remoteQuery: {
     categoryId: string
+    /** 按收藏顺序保存活动ID，名称统一从活动分类表读取。 */
+    favoriteCategoryIds: string[]
     requestTimeoutMs: number
   }
   overlay: {
@@ -56,6 +58,7 @@ export const defaultAppConfig: AppConfig = {
   },
   remoteQuery: {
     categoryId: '',
+    favoriteCategoryIds: [],
     requestTimeoutMs: CLIENT_TIMEOUT_MS,
   },
   overlay: {
@@ -100,7 +103,12 @@ export function mergeAppConfig(config: PartialAppConfig | null | undefined): App
     },
     ocr: { ...defaultAppConfig.ocr, ...config?.ocr },
     matcher: { ...defaultAppConfig.matcher, ...config?.matcher },
-    remoteQuery: { ...defaultAppConfig.remoteQuery, ...config?.remoteQuery, requestTimeoutMs: CLIENT_TIMEOUT_MS },
+    remoteQuery: {
+      ...defaultAppConfig.remoteQuery,
+      ...config?.remoteQuery,
+      favoriteCategoryIds: [...new Set(config?.remoteQuery?.favoriteCategoryIds ?? [])],
+      requestTimeoutMs: CLIENT_TIMEOUT_MS,
+    },
     overlay: { ...defaultAppConfig.overlay, ...config?.overlay },
   }
 }
