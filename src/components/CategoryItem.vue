@@ -16,6 +16,7 @@ const emit = defineEmits<{
 
 <template>
   <div class="category-item" :class="{ active: selected }">
+    <slot name="leading" />
     <button
       type="button"
       class="category-button"

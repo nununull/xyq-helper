@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import CategoryItem from './CategoryItem.vue'
 import { activityCategoryGroups } from '../data/activityCategories'
 import { filterCategoryGroups } from '../features/categories/filterCategoryGroups'
+import { useFavoriteSorting } from '../features/categories/useFavoriteSorting'
 import { useConfigStore } from '../stores/config'
 import type { ActivityCategory } from '../types/remoteQuestion'
 
@@ -21,6 +22,7 @@ const configStore = useConfigStore()
 const savingFavorite = ref(false)
 const favoriteError = ref('')
 const categorySearch = ref<HTMLInputElement | null>(null)
+const favoriteList = ref<HTMLElement | null>(null)
 const categoryById = new Map(activityCategoryGroups.flatMap(group => (
   group.categories.map(category => [category.id, category] as const)
 )))
@@ -33,10 +35,47 @@ const totalCount = activityCategoryGroups.reduce(
   0,
 )
 const visibleGroups = computed(() => filterCategoryGroups(activityCategoryGroups, keyword.value))
+const { drag, startDrag, moveDrag, finishDrag, cancelDrag } = useFavoriteSorting(favoriteList, reorderFavorite, () => savingFavorite.value)
+
+watch(favoritesExpanded, expanded => { if (!expanded) cancelDrag() })
+
+/** 保存或移动导致按钮暂时失焦时，恢复原按钮或接回搜索框。 */
+async function restoreFavoriteFocus(control: Element | null): Promise<void> {
+  await nextTick()
+  if (control instanceof HTMLButtonElement
+    && control.matches('.category-favorite-toggle, .category-drag-handle')
+    && document.activeElement === document.body) {
+    (control.isConnected ? control : categorySearch.value)?.focus()
+  }
+}
+
+/** 保存拖动或键盘调整后的收藏顺序，失败时沿用原顺序并允许重试。 */
+async function reorderFavorite(categoryId: string, targetId: string, after: boolean): Promise<void> {
+  if (savingFavorite.value) return
+  const focusedControl = document.activeElement
+  savingFavorite.value = true
+  favoriteError.value = ''
+  try {
+    await configStore.moveActivityCategoryFavorite(categoryId, targetId, after)
+  } catch {
+    favoriteError.value = '顺序没存上，请重新拖动排序。'
+  } finally {
+    savingFavorite.value = false
+    await restoreFavoriteFocus(focusedControl)
+  }
+}
+
+/** 在排序手柄上按上下方向键，将收藏移到相邻项前后。 */
+async function moveFavoriteByKeyboard(categoryId: string, direction: number): Promise<void> {
+  if (savingFavorite.value || drag.value) return
+  const index = favoriteCategories.value.findIndex(category => category.id === categoryId)
+  const target = favoriteCategories.value[index + direction]
+  if (index >= 0 && target) await reorderFavorite(categoryId, target.id, direction > 0)
+}
 
 /** 保存收藏变更并提示失败；取消收藏后将键盘焦点接回搜索框。 */
 async function toggleFavorite(categoryId: string): Promise<void> {
-  if (savingFavorite.value) return
+  if (savingFavorite.value || drag.value) return
   const focusedControl = document.activeElement
   savingFavorite.value = true
   favoriteError.value = ''
@@ -46,12 +85,7 @@ async function toggleFavorite(categoryId: string): Promise<void> {
     favoriteError.value = '收藏没存上，请再点一次星标重试。'
   } finally {
     savingFavorite.value = false
-    await nextTick()
-    if (focusedControl instanceof HTMLButtonElement
-      && focusedControl.classList.contains('category-favorite-toggle')
-      && document.activeElement === document.body) {
-      (focusedControl.isConnected ? focusedControl : categorySearch.value)?.focus()
-    }
+    await restoreFavoriteFocus(focusedControl)
   }
 }
 
@@ -104,17 +138,45 @@ function toggleGroup(groupName: string): void {
         </button>
       </h3>
       <div id="favorite-categories-content" v-show="favoritesExpanded">
-        <div v-if="favoriteCategories.length" class="category-favorites-list">
+        <div v-if="favoriteCategories.length" ref="favoriteList" class="category-favorites-list" :aria-busy="savingFavorite">
           <CategoryItem
             v-for="category in favoriteCategories"
             :key="category.id"
             :category="category"
             :selected="selectedId === category.id"
             :favorite="true"
-            :saving="savingFavorite"
+            :saving="savingFavorite || Boolean(drag)"
+            :data-favorite-id="category.id"
+            :class="{
+              'favorite-dragging': drag?.moved && drag.categoryId === category.id,
+              'favorite-drop-before': drag?.moved && drag.targetId === category.id && drag.categoryId !== category.id && !drag.after,
+              'favorite-drop-after': drag?.moved && drag.targetId === category.id && drag.categoryId !== category.id && drag.after,
+            }"
             @select="selectFavorite"
             @favorite="toggleFavorite"
-          />
+          >
+            <template #leading>
+              <button
+                type="button"
+                class="category-drag-handle"
+                :aria-label="`拖动${category.name}排序`"
+                aria-description="按上下方向键调整收藏顺序"
+                aria-keyshortcuts="ArrowUp ArrowDown"
+                title="拖动排序，或按上下方向键调整"
+                :disabled="savingFavorite || favoriteCategories.length < 2"
+                @pointerdown="startDrag($event, category.id)"
+                @pointermove="moveDrag"
+                @pointerup="finishDrag"
+                @pointercancel="cancelDrag"
+                @lostpointercapture="cancelDrag"
+                @keydown.esc.prevent="cancelDrag"
+                @keydown.up.prevent="moveFavoriteByKeyboard(category.id, -1)"
+                @keydown.down.prevent="moveFavoriteByKeyboard(category.id, 1)"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="9" cy="5" r="1.5" /><circle cx="15" cy="5" r="1.5" /><circle cx="9" cy="12" r="1.5" /><circle cx="15" cy="12" r="1.5" /><circle cx="9" cy="19" r="1.5" /><circle cx="15" cy="19" r="1.5" /></svg>
+              </button>
+            </template>
+          </CategoryItem>
         </div>
         <p v-else class="category-favorites-empty">点任务右侧的星标，收藏后直接切换。</p>
       </div>
@@ -140,7 +202,7 @@ function toggleGroup(groupName: string): void {
             :category="category"
             :selected="selectedId === category.id"
             :favorite="favoriteIds.includes(category.id)"
-            :saving="savingFavorite"
+            :saving="savingFavorite || Boolean(drag)"
             @select="emit('select', $event)"
             @favorite="toggleFavorite"
           />

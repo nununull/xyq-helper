@@ -76,6 +76,26 @@ export const useConfigStore = defineStore('config', {
         throw error
       }
     },
+    /** 将收藏移到目标前后，串行落库成功后再更新界面顺序。 */
+    async moveActivityCategoryFavorite(categoryId: string, targetId: string, after: boolean) {
+      try {
+        await enqueueConfigWrite(async () => {
+          const previousIds = this.config.remoteQuery.favoriteCategoryIds
+          if (categoryId === targetId || !previousIds.includes(categoryId) || !previousIds.includes(targetId)) return
+          const favoriteIds = previousIds.filter(id => id !== categoryId)
+          favoriteIds.splice(favoriteIds.indexOf(targetId) + Number(after), 0, categoryId)
+          if (favoriteIds.every((id, index) => id === previousIds[index])) return
+          const nextConfig = structuredClone(toRaw(this.config))
+          nextConfig.remoteQuery.favoriteCategoryIds = favoriteIds
+          await saveConfig(nextConfig)
+          this.config.remoteQuery.favoriteCategoryIds = favoriteIds
+          console.info(JSON.stringify({ msg: '已调整活动收藏顺序', categoryId, targetId, after, favoriteCategoryIds: favoriteIds }))
+        })
+      } catch (error) {
+        console.error(JSON.stringify({ msg: '保存活动收藏顺序失败', categoryId, targetId, after, error: error instanceof Error ? error.message : String(error) }))
+        throw error
+      }
+    },
     /** 更新答案语音播报开关并立即持久化。 */
     async setSpeechEnabled(speechEnabled: boolean) {
       const nextConfig = structuredClone(toRaw(this.config))

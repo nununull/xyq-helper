@@ -106,4 +106,77 @@ describe('配置 Store', () => {
     expect(store.config.remoteQuery.categoryId).toBe('15')
     expect(store.config.remoteQuery.favoriteCategoryIds).toEqual(expectedFavorites)
   })
+
+  it.each([
+    { categoryId: '14', targetId: '15', after: true, expected: ['44', '15', '14'] },
+    { categoryId: '15', targetId: '14', after: false, expected: ['15', '14', '44'] },
+    { categoryId: '14', targetId: '15', after: false, expected: ['44', '14', '15'] },
+  ])('移动收藏 $categoryId 到 $targetId 前后指定位置并保存顺序', async ({ categoryId, targetId, after, expected }) => {
+    const { loadConfig, saveConfig } = await import('../composables/useLocalStorageDB')
+    const { useConfigStore } = await import('./config')
+    vi.mocked(saveConfig).mockReset().mockResolvedValue(undefined)
+    const store = useConfigStore()
+    store.config.remoteQuery.favoriteCategoryIds = ['14', '44', '15']
+    store.config.remoteQuery.categoryId = '44'
+
+    await store.moveActivityCategoryFavorite(categoryId, targetId, after)
+
+    expect(store.config.remoteQuery.favoriteCategoryIds).toEqual(expected)
+    expect(store.config.remoteQuery.categoryId).toBe('44')
+    const saved = JSON.parse(JSON.stringify(vi.mocked(saveConfig).mock.calls.at(-1)![0]))
+    vi.mocked(loadConfig).mockResolvedValue(saved)
+    await store.load()
+    expect(store.config.remoteQuery.favoriteCategoryIds).toEqual(expected)
+  })
+
+  it.each([
+    ['14', '14', false],
+    ['14', '44', false],
+    ['不存在', '14', false],
+    ['14', '不存在', true],
+  ] as const)('收藏顺序未改变或目标失效时不写入配置：%s → %s', async (categoryId, targetId, after) => {
+    const { saveConfig } = await import('../composables/useLocalStorageDB')
+    const { useConfigStore } = await import('./config')
+    vi.mocked(saveConfig).mockReset().mockResolvedValue(undefined)
+    const store = useConfigStore()
+    store.config.remoteQuery.favoriteCategoryIds = ['14', '44', '15']
+
+    await store.moveActivityCategoryFavorite(categoryId, targetId, after)
+
+    expect(saveConfig).not.toHaveBeenCalled()
+    expect(store.config.remoteQuery.favoriteCategoryIds).toEqual(['14', '44', '15'])
+  })
+
+  it.each([false, true])('排序保存失败=%s 时，并发切换活动保留正确的收藏顺序', async (failOrder) => {
+    const { saveConfig } = await import('../composables/useLocalStorageDB')
+    const { useConfigStore } = await import('./config')
+    const store = useConfigStore()
+    store.config.remoteQuery.favoriteCategoryIds = ['14', '44', '15']
+    let finishOrder!: () => void
+    const pendingOrder = new Promise<void>(resolve => { finishOrder = resolve })
+    const savedConfigs: typeof store.config[] = []
+    vi.mocked(saveConfig).mockReset().mockImplementation(async config => {
+      savedConfigs.push(JSON.parse(JSON.stringify(config)))
+      if (savedConfigs.length === 1) {
+        await pendingOrder
+        if (failOrder) throw new Error('排序写入失败')
+      }
+    })
+
+    const order = store.moveActivityCategoryFavorite('14', '15', true)
+    const orderResult = failOrder
+      ? expect(order).rejects.toThrow('排序写入失败')
+      : expect(order).resolves.toBeUndefined()
+    await Promise.resolve()
+    const selection = store.selectActivityCategory('15')
+    expect(store.config.remoteQuery.favoriteCategoryIds).toEqual(['14', '44', '15'])
+    finishOrder()
+    await orderResult
+    await selection
+
+    const expected = failOrder ? ['14', '44', '15'] : ['44', '15', '14']
+    expect(savedConfigs[1].remoteQuery.favoriteCategoryIds).toEqual(expected)
+    expect(savedConfigs[1].remoteQuery.categoryId).toBe('15')
+    expect(store.config.remoteQuery.favoriteCategoryIds).toEqual(expected)
+  })
 })
