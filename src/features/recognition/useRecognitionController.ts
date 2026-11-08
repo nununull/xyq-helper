@@ -90,7 +90,10 @@ export function createRecognitionController(dependencies: RecognitionControllerD
         signal: controller.signal, timeoutMs: dependencies.getRequestTimeoutMs(),
       })
       if (!isCurrent()) return
-      if (result.kind === 'success') {
+      if (result.kind === 'authorizationRequired') {
+        stop()
+        presentation.setPhase('waitingAuthorization', result.message)
+      } else if (result.kind === 'success') {
         presentation.publishResult(result.candidates, Math.round(now() - startedAt))
         presentation.setPhase('showingAnswer', '175dt已返回答案，等待下一题')
       } else {

@@ -20,6 +20,7 @@ export type RemoteQueryFailureKind =
   | 'corsBlocked'
   | 'timeout'
   | 'rateLimited'
+  | 'authorizationRequired'
   | 'remoteError'
   | 'malformedResponse'
 
@@ -33,6 +34,10 @@ export interface RemoteQueryOptions {
   timeoutMs?: number
   fetcher?: typeof fetch
 }
+
+export type RemoteAuthorizationState =
+  | { authorized: false; qrCodeUrl: string }
+  | { authorized: true; expiresAt: string }
 
 export interface RankedRemoteCandidate extends RemoteQuestionCandidate {
   answer: AnswerOptionKey | null
@@ -73,4 +78,5 @@ export type RecognitionPhase =
   | 'matching'
   | 'showingAnswer'
   | 'waitingRetry'
+  | 'waitingAuthorization'
   | 'paused'

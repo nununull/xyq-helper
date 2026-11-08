@@ -1,5 +1,5 @@
 import type { CaptureFrame } from '../../types/capture'
-import type { RemoteQueryOptions, RemoteQueryResult, RemoteQuestionCandidate } from '../../types/remoteQuestion'
+import type { RemoteAuthorizationState, RemoteQueryOptions, RemoteQueryResult, RemoteQuestionCandidate } from '../../types/remoteQuestion'
 import { sanitizeRemoteAnswer, sanitizeRemoteText } from '../../utils/sanitizeRemoteText'
 import { CLIENT_TIMEOUT_MS, MAX_IMAGE_BYTES } from '../../../shared/recognition-policy.mjs'
 
@@ -43,6 +43,7 @@ export async function queryRemoteScreenshot(
     if (!payload || typeof payload !== 'object') return { kind: 'malformedResponse', message: '175dt返回格式发生变化' }
     const result = payload as { status?: number; hits?: Array<{ q?: unknown; a?: unknown }> }
     if (result.status === 404) return { kind: 'empty', candidates: [] }
+    if (result.status === 1234) return { kind: 'authorizationRequired', message: '175dt当前要求授权，请在授权面板扫码确认，或稍后手动重试' }
     if (result.status !== 200) {
       const message = result.status === 175000001 ? '截图过大，请重新校准，只框选题干，不包含选项'
         : result.status === 175000006 ? '当前不在该活动时间，请检查活动分类'
@@ -62,6 +63,29 @@ export async function queryRemoteScreenshot(
   } finally {
     clearTimeout(timeout)
     options.signal?.removeEventListener('abort', cancel)
+  }
+}
+
+/** 向本机代理确认同一个官方会话，只把二维码或有效期交给页面。 */
+export async function queryRemoteAuthorization(options: RemoteQueryOptions = {}): Promise<RemoteAuthorizationState> {
+  const timeout = AbortSignal.timeout(options.timeoutMs ?? CLIENT_TIMEOUT_MS)
+  const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout
+  try {
+    signal.throwIfAborted()
+    const response = await (options.fetcher ?? fetch)('/api/175dt/authorization', { method: 'POST', signal })
+    const payload: unknown = await response.json()
+    signal.throwIfAborted()
+    const state = payload as { status?: number; authorized?: boolean; qrCodeUrl?: unknown; expiresAt?: unknown } | null
+    if (!response.ok || state?.status !== 200) throw new Error(readMessage(payload) || '无法确认175dt授权，请稍后重试')
+    if (state.authorized === true && typeof state.expiresAt === 'string') return { authorized: true, expiresAt: state.expiresAt }
+    if (state.authorized === false && typeof state.qrCodeUrl === 'string') return { authorized: false, qrCodeUrl: state.qrCodeUrl }
+    throw new Error('175dt授权状态格式发生变化')
+  } catch (error) {
+    if (options.signal?.aborted) throw error
+    if (signal.aborted) throw new Error('175dt授权确认超时，请重试')
+    if (error instanceof SyntaxError) throw new Error('当前站点没有配置175dt授权服务，请使用本机启动版')
+    if (error instanceof TypeError) throw new Error('无法连接175dt授权服务，请检查网络后重试')
+    throw error
   }
 }
 

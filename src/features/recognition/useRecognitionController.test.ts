@@ -16,6 +16,7 @@ function frame(variant = 0): CaptureFrame {
 /** 创建只以175dt结果为输入的控制器测试环境。 */
 function harness(query?: RecognitionControllerDependencies['queryScreenshot']) {
   let currentFrame = frame()
+  let categoryId = '53'
   const presentation = { setPhase: vi.fn(), setRunning: vi.fn(), publishResult: vi.fn(), clearResult: vi.fn(), recordRequest: vi.fn() }
   const queryScreenshot = vi.fn<RecognitionControllerDependencies['queryScreenshot']>(query ?? (async () => ({
     kind: 'success', candidates: [{ question: '题目', answerText: '答案', source: '175dt' }],
@@ -23,7 +24,7 @@ function harness(query?: RecognitionControllerDependencies['queryScreenshot']) {
   const controller = createRecognitionController({
     captureFrame: () => currentFrame,
     queryScreenshot,
-    getCategoryId: () => '53',
+    getCategoryId: () => categoryId,
     getRequestTimeoutMs: () => 15000,
     getChangeThresholdPercent: () => 0.5,
     now: () => Date.now(),
@@ -31,7 +32,7 @@ function harness(query?: RecognitionControllerDependencies['queryScreenshot']) {
     recognitionStore: presentation,
   })
   controllers.push(controller)
-  return { controller, queryScreenshot, presentation, changeFrame: () => { currentFrame = frame(1) } }
+  return { controller, queryScreenshot, presentation, changeFrame: () => { currentFrame = frame(1) }, setCategoryId: (value: string) => { categoryId = value } }
 }
 
 const controllers: ReturnType<typeof createRecognitionController>[] = []
@@ -43,6 +44,40 @@ afterEach(() => {
 })
 
 describe('175dt截图连续识别', () => {
+  it('授权拦截停止自动上传，手动重试后按最新返回直接恢复识别', async () => {
+    const query = vi.fn<RecognitionControllerDependencies['queryScreenshot']>()
+      .mockResolvedValueOnce({ kind: 'authorizationRequired', message: '请扫码授权' })
+      .mockResolvedValueOnce({ kind: 'success', candidates: [{ question: '题目', answerText: '答案', source: '175dt' }] })
+    const test = harness(query)
+    test.controller.start()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(test.presentation.setRunning).toHaveBeenLastCalledWith(false)
+    expect(test.presentation.setPhase).toHaveBeenLastCalledWith('waitingAuthorization', '请扫码授权')
+    test.changeFrame()
+    await vi.advanceTimersByTimeAsync(10000)
+    expect(test.queryScreenshot).toHaveBeenCalledTimes(1)
+    await test.controller.retry()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(test.queryScreenshot).toHaveBeenCalledTimes(2)
+    expect(test.presentation.setPhase).toHaveBeenLastCalledWith('showingAnswer', '175dt已返回答案，等待下一题')
+  })
+
+  it('切换分类后重新查询，不沿用上一分类的授权要求', async () => {
+    const test = harness(async categoryId => categoryId === '53'
+      ? { kind: 'authorizationRequired', message: '请扫码授权' }
+      : { kind: 'success', candidates: [{ question: '新分类题目', answerText: '答案', source: '175dt' }] })
+    test.controller.start()
+    await vi.advanceTimersByTimeAsync(500)
+    expect(test.presentation.setPhase).toHaveBeenLastCalledWith('waitingAuthorization', '请扫码授权')
+    test.setCategoryId('44')
+    test.controller.resetForCategory()
+    test.controller.start()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(test.queryScreenshot).toHaveBeenCalledTimes(2)
+    expect(test.queryScreenshot.mock.calls[1]![0]).toBe('44')
+    expect(test.presentation.setPhase).toHaveBeenLastCalledWith('showingAnswer', '175dt已返回答案，等待下一题')
+  })
+
   it('稳定500毫秒才查询，同一画面持续不变只请求一次', async () => {
     const test = harness()
     test.controller.start()

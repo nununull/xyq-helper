@@ -5,6 +5,7 @@ import CapturePreview from './CapturePreview.vue'
 import AnswerOverlay from './AnswerOverlay.vue'
 import CategorySelector from './CategorySelector.vue'
 import SettingsPanel from './SettingsPanel.vue'
+import RemoteAuthorizationPanel from './RemoteAuthorizationPanel.vue'
 import { useScreenCapture } from '../composables/useScreenCapture'
 import { useRecognitionController } from '../features/recognition/useRecognitionController'
 import { getCaptureErrorMessage, useCaptureStore } from '../stores/capture'
@@ -14,6 +15,8 @@ import { applyQuestionRegion, resolveCaptureConfig } from '../features/setup/app
 import type { CaptureRegion } from '../types/capture'
 import { activityCategoryGroups } from '../data/activityCategories'
 import { useAnswerPictureInPicture } from '../composables/useAnswerPictureInPicture'
+import { queryRemoteAuthorization } from '../features/remote-query/remoteScreenshotClient'
+import type { RemoteAuthorizationState } from '../types/remoteQuestion'
 
 const captureStore = useCaptureStore()
 const configStore = useConfigStore()
@@ -24,12 +27,18 @@ const previewStream = shallowRef<MediaStream | null>(null)
 const calibrating = ref(false)
 const focusMode = ref(false)
 const serviceReady = ref<boolean | null>(null)
+const authorization = shallowRef<RemoteAuthorizationState | null>(null)
+const authorizationLoading = ref(false)
+const authorizationError = ref('')
+let authorizationRequest: AbortController | null = null
 let calibrationRevision = 0
 const selectedCategoryId = computed(() => configStore.config.remoteQuery.categoryId)
 const selectedCategoryName = computed(() => activityCategoryGroups.flatMap(group => group.categories)
   .find(category => category.id === selectedCategoryId.value)?.name ?? '')
 const activeCapture = computed(() => resolveCaptureConfig(configStore.config, screenCapture.sourceSize.value))
 const questionRegion = computed(() => activeCapture.value.questionRegion)
+const recognitionReady = computed(() => Boolean(previewStream.value && questionRegion.value) && !calibrating.value)
+const authorizationNeeded = computed(() => recognitionStore.phase === 'waitingAuthorization')
 const controller = useRecognitionController(() => activeCapture.value)
 const captureStatusLabel = computed(() => ({ idle: '待连接', requesting: '选择窗口中', active: '已连接', paused: '已停止', error: '异常' }[captureStore.status]))
 const actionHint = computed(() => {
@@ -51,6 +60,42 @@ async function checkService(): Promise<void> {
     serviceReady.value = false
   }
 }
+
+/** 题干选框就绪后直接查询，是否需要授权以本次接口返回为准。 */
+function startRecognition(): void {
+  if (recognitionReady.value) controller.start()
+}
+
+/** 确认当前会话的扫码结果，通过后按用户操作继续当前题目。 */
+async function refreshAuthorization(resume = false): Promise<void> {
+  if (authorizationRequest) return
+  const revision = calibrationRevision
+  const request = new AbortController()
+  authorizationRequest = request
+  authorizationLoading.value = true
+  authorizationError.value = ''
+  let authorized = false
+  try {
+    const state = await queryRemoteAuthorization({ signal: request.signal })
+    if (request.signal.aborted) return
+    authorization.value = state
+    authorized = state.authorized
+    if (resume && !authorized) authorizationError.value = '还没查到授权，请完整看完并关闭广告后再确认。'
+  } catch (error) {
+    if (!request.signal.aborted) authorizationError.value = error instanceof Error ? error.message : '授权确认失败，请重试'
+  } finally {
+    if (authorizationRequest === request) {
+      authorizationRequest = null
+      authorizationLoading.value = false
+    }
+  }
+  if (resume && authorized && authorizationNeeded.value && recognitionReady.value && revision === calibrationRevision) await controller.retry()
+}
+
+/** 仅在上游明确要求授权时检查会话，普通识别失败保持手动恢复。 */
+watch(() => recognitionStore.phase, phase => {
+  if (phase === 'waitingAuthorization' && serviceReady.value) void refreshAuthorization()
+})
 
 /** 使用175dt返回的答案文本播报，不推断选项字母。 */
 function speakAnswer(): void {
@@ -111,7 +156,7 @@ watch([previewStream, selectedCategoryId, screenCapture.sourceSize], () => {
   captureStore.lastFrame = null
   captureStore.error = ''
   calibrating.value = !questionRegion.value
-  if (questionRegion.value) controller.start()
+  startRecognition()
 })
 
 /** 暂停上传，在当前共享画面上重新框选题干。 */
@@ -133,7 +178,7 @@ async function completeCalibration(region: CaptureRegion, sourceSize: { width: n
     if (revision !== calibrationRevision || stream !== previewStream.value || !calibrating.value) return
     captureStore.error = ''
     calibrating.value = false
-    controller.start()
+    startRecognition()
   } catch (error) {
     if (revision === calibrationRevision) captureStore.error = error instanceof Error ? error.message : '保存题干选框失败'
   }
@@ -143,7 +188,7 @@ async function completeCalibration(region: CaptureRegion, sourceSize: { width: n
 function cancelCalibration(): void {
   calibrationRevision += 1
   calibrating.value = false
-  if (questionRegion.value) controller.start()
+  startRecognition()
 }
 
 /** 浏览器停止共享后释放界面状态和在途请求。 */
@@ -155,6 +200,7 @@ function handleCaptureEnded(): void {
 const unsubscribeCaptureEnded = screenCapture.onCaptureEnded(handleCaptureEnded)
 onMounted(() => { void checkService() })
 onBeforeUnmount(() => {
+  authorizationRequest?.abort()
   unsubscribeCaptureEnded()
   stopCapture()
 })
@@ -176,7 +222,7 @@ onBeforeUnmount(() => {
         <button class="focus-action" type="button" :disabled="!previewStream" :aria-pressed="focusMode" @click="focusMode = !focusMode">{{ focusMode ? '退出专注' : '放大画面' }}</button>
         <button class="primary-action" type="button" :disabled="!selectedCategoryId || !serviceReady || captureStore.status === 'requesting' || Boolean(previewStream)" @click="startCapture">连接游戏画面</button>
         <button class="subtle-action" type="button" :disabled="!previewStream && captureStore.status !== 'requesting'" @click="stopCapture">停止</button>
-        <button class="subtle-action" type="button" :disabled="!previewStream || calibrating || !questionRegion" @click="controller.retry">手动重试</button>
+        <button class="subtle-action" type="button" :disabled="!recognitionReady" @click="controller.retry">手动重试</button>
         <button class="subtle-action" type="button" :disabled="!previewStream || calibrating" @click="beginCalibration">重新框选</button>
       </div>
     </header>
@@ -197,6 +243,7 @@ onBeforeUnmount(() => {
         </CapturePreview>
       </main>
       <aside class="rightbar">
+        <RemoteAuthorizationPanel v-if="serviceReady && (authorizationNeeded || authorization?.authorized)" :state="authorization" :loading="authorizationLoading" :error="authorizationError" @refresh="refreshAuthorization(true)" />
         <section class="panel">
           <h2>识别状态</h2>
           <p role="status">{{ recognitionStore.message || '等待连接游戏画面' }}</p>

@@ -4,4 +4,5 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 export function create175dtProxy(options?: {
   fetcher?: typeof fetch
   logger?: Pick<Console, 'info' | 'error'>
+  sessionFile?: string
 }): (request: IncomingMessage, response: ServerResponse, next?: () => void) => Promise<void>

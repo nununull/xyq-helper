@@ -12,7 +12,7 @@ const props = withDefaults(defineProps<{
 const primary = computed(() => props.candidates[0])
 const remaining = computed(() => props.candidates.slice(1))
 const busy = computed(() => props.running && ['primaryQuery', 'recognizing', 'stabilizing'].includes(props.phase))
-const tone = computed(() => busy.value ? 'busy' : props.phase === 'showingAnswer' ? 'success' : props.phase === 'waitingRetry' ? 'warning' : 'idle')
+const tone = computed(() => busy.value ? 'busy' : props.phase === 'showingAnswer' ? 'success' : ['waitingRetry', 'waitingAuthorization'].includes(props.phase) ? 'warning' : 'idle')
 </script>
 
 <template>
